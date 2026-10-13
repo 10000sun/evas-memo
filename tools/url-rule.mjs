@@ -1,14 +1,27 @@
 // 본문 속 http(s) 주소 규칙. 에디터(↗·Ctrl+클릭)와 미리보기 자동 링크가 함께 쓴다.
-// 주소는 ASCII URL 문자만이라 한글 조사(…/xyz에)는 들어가지 않고, 끝의 문장부호와 짝 없는 닫는 괄호는 뺀다.
-// 짝이 맞는 괄호(위키 주소 Foo_(bar))는 주소로 둔다
-const URL_RE = /https?:\/\/[A-Za-z0-9\-._~:/?#@!$&'*+,;=%()]+/g;
+// - 주소 문자: ASCII URL 문자 + 한글. 끝의 문장부호와 짝 없는 닫는 괄호는 뺀다(짝이 맞는 괄호 Foo_(bar)는 유지)
+// - 끝의 한글 덩어리가 영숫자·_·-·) 바로 뒤에서 시작하면 조사·문장(…/xyz에서)이라 떼고,
+//   구분 문자(/ = # ? & . 등) 뒤에서 시작하면 주소의 일부(…/wiki/한글, ?q=한글, #제목)로 둔다
+const HANGUL = "\\u1100-\\u11FF\\u3130-\\u318F\\uAC00-\\uD7A3";
+const URL_RE = new RegExp(`https?://[A-Za-z0-9\\-._~:/?#@!$&'*+,;=%()${HANGUL}]+`, "g");
+const IS_HANGUL = new RegExp(`[${HANGUL}]`);
 
+// 붙여 넣은 아주 긴 주소에도 멈추지 않게 괄호는 한 번만 세고 끝에서부터 한 칸씩 깎는다(선형)
 function trimUrl(u) {
-  for (;;) {
-    if (/[.,;:!?'*]$/.test(u)) u = u.slice(0, -1);
-    else if (u.endsWith(")") && u.split("(").length < u.split(")").length) u = u.slice(0, -1);
-    else return u;
+  let end = u.length, open = 0, close = 0;
+  for (const c of u) if (c === "(") open++; else if (c === ")") close++;
+  while (end) {
+    const c = u[end - 1];
+    if (".,;:!?'*".includes(c)) end--;
+    else if (c === ")" && open < close) { close--; end--; }
+    else if (IS_HANGUL.test(c)) {
+      let j = end - 1;
+      while (j && IS_HANGUL.test(u[j - 1])) j--;
+      if (!/[A-Za-z0-9_)\-]/.test(u[j - 1])) break;
+      end = j;
+    } else break;
   }
+  return u.slice(0, end);
 }
 
 // text 안의 주소들 -> {from, to, url} (from·to는 base를 더한 위치). 스킴만 남는 것은 버린다

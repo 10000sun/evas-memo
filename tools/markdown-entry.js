@@ -6,7 +6,8 @@ import { findUrls } from "./url-rule.mjs";
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   // href가 있으면 태그와 무관하게 새 탭으로: 같은 탭이 외부 사이트로 바뀌거나(피싱) Referer가 새지 않게
   if (node.hasAttribute("href")) { node.setAttribute("target", "_blank"); node.setAttribute("rel", "noopener noreferrer"); }
-  if (node.tagName === "INPUT") node.setAttribute("disabled", ""); // 체크박스는 읽기 전용
+  // input은 할 일 체크박스(읽기 전용)만 남긴다: type=image 같은 것은 외부 이미지를 불러온다
+  if (node.tagName === "INPUT") node.getAttribute("type") === "checkbox" ? node.setAttribute("disabled", "") : node.remove();
   if (node.tagName === "IMG") node.setAttribute("referrerpolicy", "no-referrer"); // 외부 이미지에 어느 메모를 보는지 안 알린다
 });
 
@@ -15,7 +16,8 @@ const OPTIONS = {
   ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i, // 스킴은 http/https/mailto만(상대 주소는 허용)
   // 화면 전체를 덮거나 입력을 받는 원시 HTML, 이미지 지도 링크, 외부 영상·소리
   FORBID_TAGS: ["style", "form", "button", "textarea", "select", "area", "video", "audio", "source", "track"],
-  FORBID_ATTR: ["style"],
+  // style: 화면 덮기, for·form·formaction: 미리보기 글자로 앱 버튼(삭제·로그아웃 등) 누르기, background: 외부 이미지
+  FORBID_ATTR: ["style", "for", "form", "formaction", "background"],
   SANITIZE_NAMED_PROPS: true, // id·name에 접두어를 붙여 앱의 id(e-meta 등)를 가로채지 못하게
 };
 

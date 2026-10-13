@@ -4,7 +4,7 @@ import { Decoration, ViewPlugin, WidgetType, keymap } from "@codemirror/view";
 import { indentLess, indentMore } from "@codemirror/commands";
 import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
-import { yCollab } from "y-codemirror.next";
+import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { HighlightStyle, indentUnit, syntaxHighlighting, syntaxTree } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
@@ -69,10 +69,15 @@ const links = ViewPlugin.fromClass(class {
 // 번호 항목의 Shift+Tab(같은 단계 직전 번호 +1)만 맞춘다. 키보드로 에디터를 벗어나려면 Esc 뒤 Tab(CodeMirror 기본 동작)
 const EMPTY_ITEM = /^( *)(?:[-*+]|(\d+)([.)]))( +)(\[[ xX]\] +)?$/;
 const ORDERED = /^( *)(\d+)([.)])/;
+// 코드 블록(펜스·들여쓰기 코드) 안에서는 목록 규칙을 쓰지 않는다
+function inCode(state, pos) {
+  for (let n = syntaxTree(state).resolveInner(pos, -1); n; n = n.parent) if (n.name === "FencedCode" || n.name === "CodeBlock") return true;
+  return false;
+}
 function tab(view) {
   const s = view.state, sel = s.selection.main;
   if (s.selection.ranges.some((r) => !r.empty)) return indentMore(view);
-  const line = s.doc.lineAt(sel.head), m = s.selection.ranges.length === 1 && sel.head === line.to && EMPTY_ITEM.exec(line.text);
+  const line = s.doc.lineAt(sel.head), m = s.selection.ranges.length === 1 && sel.head === line.to && !inCode(s, sel.head) && EMPTY_ITEM.exec(line.text);
   if (m) {
     const text = "    " + (m[2] ? m[1] + "1" + m[3] + m[4] + (m[5] || "") : line.text);
     view.dispatch({ changes: { from: line.from, to: line.to, insert: text }, selection: { anchor: line.from + text.length }, userEvent: "input.indent" });
@@ -84,7 +89,7 @@ function tab(view) {
 function shiftTab(view) {
   const s = view.state, sel = s.selection.main;
   const line = s.doc.lineAt(sel.head), m = ORDERED.exec(line.text);
-  if (s.selection.ranges.length > 1 || !sel.empty || !m || !m[1]) return indentLess(view);
+  if (s.selection.ranges.length > 1 || !sel.empty || !m || !m[1] || inCode(s, sel.head)) return indentLess(view);
   const depth = Math.max(0, m[1].length - 4);
   let num = m[2]; // 같은 단계의 직전 번호를 못 찾으면 그대로
   for (let n = line.number - 1; n >= 1; n--) {
@@ -102,15 +107,15 @@ function shiftTab(view) {
 function enterOnEmptyItem(view) {
   const s = view.state, sel = s.selection.main, line = s.doc.lineAt(sel.head);
   if (s.selection.ranges.length > 1 || !sel.empty || sel.head !== line.to || !(EMPTY_ITEM.test(line.text) || /^ *> ?$/.test(line.text))) return false;
-  for (let n = syntaxTree(s).resolveInner(sel.head, -1); n; n = n.parent) if (n.name === "FencedCode" || n.name === "CodeBlock") return false;
+  if (inCode(s, sel.head)) return false;
   const gap = line.number > 1 && s.doc.line(line.number - 1).text.trim() ? "\n" : "";
   view.dispatch({ changes: { from: line.from, to: line.to, insert: gap }, selection: { anchor: line.from + gap.length }, userEvent: "delete" });
   return true;
 }
 // markdown()의 Enter(이어쓰기)보다 먼저 돈다: 같은 Prec.high에서 확장 목록 앞쪽이 우선
 const tabKeys = Prec.high(keymap.of([{ key: "Tab", run: tab, shift: shiftTab }, { key: "Enter", run: enterOnEmptyItem }]));
-// 한글 조합 중 Enter(조합 확정)는 키맵(목록 이어쓰기 등)이 가로채지 않게 브라우저에 맡긴다
-const imeGuard = Prec.highest(EditorView.domEventHandlers({ keydown: (e) => e.isComposing }));
+// 되돌리기는 Y.UndoManager(yCollab이 만든 것)로: 내 편집만 되돌린다. basicSetup의 history는 원격 편집까지 되돌린다
+const undoKeys = Prec.high(keymap.of(yUndoManagerKeymap));
 
 // window.EvasEditor.create({parent, memoId, user:{name,color}}) -> {destroy(), view, awareness, provider}
 // provider: 화면이 연결 상태('status')·닫힘 코드('connection-close')·문서(provider.doc)를 본다
@@ -125,7 +130,7 @@ function create({ parent, memoId, user }) {
     parent,
     state: EditorState.create({
       doc: text.toString(),
-      extensions: [basicSetup, EditorView.lineWrapping, indentUnit.of("    "), imeGuard, tabKeys, markdown({ base: markdownLanguage }),
+      extensions: [basicSetup, EditorView.lineWrapping, indentUnit.of("    "), undoKeys, tabKeys, markdown({ base: markdownLanguage }),
         syntaxHighlighting(mdHighlight), links, yCollab(text, provider.awareness)],
     }),
   });

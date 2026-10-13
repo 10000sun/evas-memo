@@ -40,8 +40,13 @@ assert.doesNotMatch(links, /javascript:/);
 assert.doesNotMatch(render("[f](ftp://example.com)"), /href=/); // 허용 스킴은 http/https/mailto뿐
 // 다른 사람의 원시 HTML이 화면 전체를 덮거나(style) 앱의 id를 가로채거나(id) 입력을 받지(form) 못한다
 const raw = render('<style>body{display:none}</style><p style="position:fixed" id="e-meta">x</p><form><input type="text"></form>');
-assert.doesNotMatch(raw, /<style|style=|id="e-meta"|<form/);
-assert.match(raw, /<input[^>]*disabled/);
+assert.doesNotMatch(raw, /<style|style=|id="e-meta"|<form|<input/); // input은 할 일 체크박스만 남는다
+// 미리보기 글자를 눌러 앱 버튼(삭제·로그아웃)이 눌리지 않게(for), 다른 폼 속성도 없게
+const labels = render('<label for="e-del">눌러</label><label for="logout">x</label><img src="a.png" form="f" formaction="https://e.com">');
+assert.doesNotMatch(labels, /\sfor=|\sform=|formaction/, labels);
+// 외부 이미지 빈틈: input type=image, table·td background
+const bg = render('<input type="image" src="https://e.com/a.png"><table background="https://e.com/b.png"><tr><td background="https://e.com/c.png">x</td></tr></table>');
+assert.doesNotMatch(bg, /<input|background|e\.com/, bg);
 assert.equal(render(""), "");
 // href가 있는 요소는 태그와 무관하게 새 탭(SVG <a>·<area>로 앱 탭을 외부 사이트로 바꾸지 못하게)
 for (const bad of [
@@ -62,13 +67,42 @@ assert.equal(hrefOf("https://drive.google.com/xyz에 있어요"), "https://drive
 assert.equal(hrefOf("주소(https://a.com/x), 그리고"), "https://a.com/x");
 assert.equal(hrefOf("https://a.com/x. 끝"), "https://a.com/x");
 assert.equal(hrefOf("https://en.wikipedia.org/wiki/Foo_(bar) 문서"), "https://en.wikipedia.org/wiki/Foo_(bar)");
-assert.equal(hrefOf("https://에 없음"), undefined);
+assert.equal(hrefOf("https:// 없음"), undefined); // 스킴만 있으면 링크 아님(https://한글.kr 같은 한글 도메인은 주소로 본다)
 assert.equal(hrefOf("www.naver.com에 있어요"), "http://www.naver.com");
 assert.equal(hrefOf("https://a.com/?a=1&b=2"), "https://a.com/?a=1&amp;b=2");
 assert.equal(hrefOf("a@b.co 로 메일"), "mailto:a@b.co"); // http(s) 밖의 자동 링크(메일)는 marked 기본 그대로
 const { findUrls } = await import("./url-rule.mjs"); // 에디터(↗·Ctrl+클릭)도 같은 규칙
 assert.deepEqual([...findUrls("x https://drive.google.com/xyz에 [d](https://a.com/(y)) https://", 10)].map((u) => [u.from, u.url]),
   [[12, "https://drive.google.com/xyz"], [46, "https://a.com/(y)"]]);
+// 한글이 든 주소: 끝 한글 덩어리가 영숫자·_·-·) 바로 뒤면 조사로 떼고, 구분 문자 뒤면 주소의 일부로 둔다
+const urlOf = (t) => [...findUrls(t)].map((u) => u.url);
+for (const [text, want] of [
+  ["https://drive.google.com/xyz에서 봐요", "https://drive.google.com/xyz"],
+  ["https://drive.google.com/xyz에", "https://drive.google.com/xyz"],
+  ["https://a.com/a_b-에요", "https://a.com/a_b-"],
+  ["(https://a.com/x)에서", "https://a.com/x"],
+  ["https://en.wikipedia.org/wiki/Foo_(bar)에서", "https://en.wikipedia.org/wiki/Foo_(bar)"],
+  ["https://ko.wikipedia.org/wiki/한글 문서", "https://ko.wikipedia.org/wiki/한글"],
+  ["https://ko.wikipedia.org/wiki/한글.", "https://ko.wikipedia.org/wiki/한글"],
+  ["https://a.com/search?q=한글 로", "https://a.com/search?q=한글"],
+  ["https://a.com/doc#제목", "https://a.com/doc#제목"],
+  ["https://a.com/s?q=한글&page=2에서", "https://a.com/s?q=한글&page=2"],
+  ["https://a.com/한글/abc 끝", "https://a.com/한글/abc"],
+]) {
+  assert.deepEqual(urlOf(text), [want], text);
+  assert.equal(hrefOf(text), encodeURI(want).replace(/&/g, "&amp;"), text); // 미리보기 자동 링크도 같은 규칙
+}
+// 붙여 넣은 아주 긴 주소·괄호에도 멈추지 않는다(선형). 에디터 장식과 미리보기 모두
+for (const text of ["https://a.com/" + ")".repeat(100000), "https://a.com/" + "(".repeat(100000), "https://a.com/" + "(a)".repeat(30000),
+  ")".repeat(100000), "https://a.com/x" + "가".repeat(100000), "https://a.com/" + "a가".repeat(50000)]) {
+  let t0 = performance.now();
+  [...findUrls(text)];
+  const f = performance.now() - t0;
+  t0 = performance.now();
+  render(text);
+  const r = performance.now() - t0;
+  assert.ok(f < 1000 && r < 1000, `${text.slice(0, 20)}… findUrls ${f.toFixed(0)}ms, render ${r.toFixed(0)}ms`);
+}
 
 // 커서 색: 같은 색을 쓰는 3명이 서로의 상태를 보며 돌아가며 배정하면 모두 다른 색이 되고, 그 뒤로는 바뀌지 않는다
 const { assignDistinctColor } = createRequire(import.meta.url)("../static/color.js");
