@@ -1,13 +1,15 @@
 """폴더 API. 개인 폴더는 소유자만(관리자 포함 누구에게도 존재가 안 보임), 공동 폴더는 로그인한 누구나 본다.
+전율(admin) 폴더는 관리자 전원이 보고 만들고 고치고 지운다. 판정은 메모와 같은 ws.can_access 하나.
 
 깊이는 폴더 > 하위 폴더까지. 폴더를 지우면 하위 폴더도 지워지고 메모는 folder_id만 비워진다(FK).
 """
+import sqlite3
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 
-from . import db
+from . import db, ws
 from .auth import current_user
 
 router = APIRouter(prefix="/api/folders")
@@ -27,14 +29,14 @@ class FolderName(BaseModel):
 
 
 class FolderIn(FolderName):
-    kind: Literal["personal", "shared"]
+    kind: Literal["personal", "shared", "admin"]
     parent_id: int | None = None
 
 
 def get_visible(con, fid, user):
-    """보이는 폴더만 돌려준다. 없거나 남의 개인 폴더면 똑같이 404(존재를 알리지 않는다)."""
+    """보이는 폴더만 돌려준다. 없거나 남의 개인 폴더·비관리자의 전율 폴더면 똑같이 404(존재를 알리지 않는다)."""
     f = con.execute("SELECT * FROM folders WHERE id=?", (fid,)).fetchone()
-    if not f or (f["kind"] == "personal" and f["owner_id"] != user["id"]):
+    if not f or not ws.can_access(f, user):
         raise HTTPException(404, "폴더가 없습니다")
     return f
 
@@ -46,13 +48,19 @@ def _check_dup(con, kind, owner_id, parent_id, name, self_id=None):
         raise HTTPException(409, "같은 위치에 같은 이름의 폴더가 있습니다")
 
 
+def _need_kind(kind, user):
+    if not ws.can_use_kind(kind, user):
+        raise HTTPException(404)  # 비관리자에게는 전율 종류 자체를 드러내지 않는다
+
+
 def _need_editor(user):
     if user["role"] not in ("admin", "editor"):
         raise HTTPException(403, "권한이 없습니다")
 
 
 @router.get("")
-def list_folders(kind: Literal["personal", "shared"], user=Depends(current_user)):
+def list_folders(kind: Literal["personal", "shared", "admin"], user=Depends(current_user)):
+    _need_kind(kind, user)
     sql, args = f"SELECT {FIELDS} FROM folders WHERE kind=?", [kind]
     if kind == "personal":
         sql += " AND owner_id=?"
@@ -63,6 +71,7 @@ def list_folders(kind: Literal["personal", "shared"], user=Depends(current_user)
 
 @router.post("", status_code=201)
 def add_folder(f: FolderIn, user=Depends(current_user)):
+    _need_kind(f.kind, user)
     if f.kind == "shared":
         _need_editor(user)
     owner = user["id"] if f.kind == "personal" else None
@@ -74,9 +83,12 @@ def add_folder(f: FolderIn, user=Depends(current_user)):
             if parent["parent_id"] is not None:
                 raise HTTPException(422, "하위 폴더 아래에는 만들 수 없습니다")
         _check_dup(con, f.kind, owner, f.parent_id, f.name)
-        fid = con.execute(
-            "INSERT INTO folders(kind,owner_id,parent_id,name,created_by,created_name,created_at) VALUES(?,?,?,?,?,?,?)",
-            (f.kind, owner, f.parent_id, f.name, user["id"], user["name"], db.now())).lastrowid
+        try:
+            fid = con.execute(
+                "INSERT INTO folders(kind,owner_id,parent_id,name,created_by,created_name,created_at) VALUES(?,?,?,?,?,?,?)",
+                (f.kind, owner, f.parent_id, f.name, user["id"], user["name"], db.now())).lastrowid
+        except sqlite3.IntegrityError:  # 확인 뒤 상위 폴더가 지워짐(외래키)
+            raise HTTPException(404, "폴더가 없습니다")
         return dict(con.execute(f"SELECT {FIELDS} FROM folders WHERE id=?", (fid,)).fetchone())
 
 
@@ -87,7 +99,9 @@ def rename_folder(fid: int, f: FolderName, user=Depends(current_user)):
         if cur["kind"] == "shared":
             _need_editor(user)
         _check_dup(con, cur["kind"], cur["owner_id"], cur["parent_id"], f.name, fid)
-        con.execute("UPDATE folders SET name=? WHERE id=?", (f.name, fid))
+        # 폴더의 종류·소유자는 바뀌지 않으니 TOCTOU는 '그 사이 지워짐'뿐이다
+        if not con.execute("UPDATE folders SET name=? WHERE id=?", (f.name, fid)).rowcount:
+            raise HTTPException(404, "폴더가 없습니다")
         return dict(con.execute(f"SELECT {FIELDS} FROM folders WHERE id=?", (fid,)).fetchone())
 
 

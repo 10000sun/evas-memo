@@ -1,8 +1,8 @@
-"""캘린더 연동 API. 개인 메모는 어떤 경로로도 캘린더에 나가지 않는다.
+"""캘린더 연동 API. 개인·전율 메모는 어떤 경로로도 캘린더에 나가지 않는다.
 
 - /internal/link/memos: 캘린더 서버가 부르는 내부 경로. X-Link-Key가 맞을 때만 응답하고 공동 메모만 돌려준다.
 - /api/link/events: 브라우저 -> 이 서버(로그인 세션) -> 캘린더 내부 경로. 비밀키는 이 서버 안에서만 붙는다.
-- /api/link/memos: 브라우저가 쓰는 메모 힌트·칩 조회(공동 + scope=all이면 본인 개인).
+- /api/link/memos: 브라우저가 쓰는 메모 힌트·칩 조회(공동 + scope=all이면 본인 개인 + scope=admin이면 전율도).
 """
 import os
 import secrets
@@ -11,7 +11,7 @@ from typing import Literal
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException
 
-from . import db
+from . import db, ws
 from .auth import current_user
 
 router = APIRouter()
@@ -55,11 +55,16 @@ def parse_ids(ids: str):
     return [int(t) for t in toks if t.isascii() and t.isdigit() and len(t) <= 18][:MAX_IDS]
 
 
-def memo_rows(q: str = "", limit: int = 8, ids: str | None = None, user_id: str | None = None):
-    """공동 메모 + (user_id를 주면) 그 사람의 개인 메모. user_id 없이 부르면 개인 메모는 절대 안 나온다."""
+def memo_rows(q: str = "", limit: int = 8, ids: str | None = None, user_id: str | None = None, admin=False):
+    """공동 메모 + (user_id를 주면) 그 사람의 개인 메모 + (admin이면) 전율 메모.
+
+    기본값으로 부르면 공동만 나온다: 개인·전율 메모는 호출하는 쪽이 권한을 확인하고 명시해야만 나온다.
+    """
     where, args, limit = "kind='shared'", [], max(1, min(limit, 20))
     if user_id:
         where, args = "(kind='shared' OR (kind='personal' AND owner_id=?))", [user_id]
+    if admin:
+        where = f"({where} OR kind='admin')"
     if ids is not None:
         ids = parse_ids(ids)
         if not ids:
@@ -82,9 +87,12 @@ def internal_memos(q: str = "", limit: int = 8, ids: str | None = None, _=Depend
 
 
 @router.get("/api/link/memos")
-def link_memos(q: str = "", limit: int = 8, ids: str | None = None, scope: Literal["shared", "all"] = "shared",
-               user=Depends(current_user)):
-    return memo_rows(q, limit, ids, user["id"] if scope == "all" else None)
+def link_memos(q: str = "", limit: int = 8, ids: str | None = None,
+               scope: Literal["shared", "all", "admin"] = "shared", user=Depends(current_user)):
+    """scope: shared=공동, all=공동+본인 개인, admin=공동+본인 개인+전율(관리자만, 아니면 없는 경로처럼 404)."""
+    if scope == "admin" and not ws.can_use_kind("admin", user):
+        raise HTTPException(404)
+    return memo_rows(q, limit, ids, user["id"] if scope != "shared" else None, admin=scope == "admin")
 
 
 @router.get("/api/link/events")

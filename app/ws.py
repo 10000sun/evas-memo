@@ -24,9 +24,20 @@ def body(doc: Doc) -> str:
     return str(doc.get("text", type=Text))  # 에디터(EvasEditor)가 쓰는 공유 텍스트 이름
 
 
-def can_access(memo, user) -> bool:
-    """공동은 로그인한 누구나, 개인은 소유자만(관리자도 예외 없음)."""
-    return memo["kind"] == "shared" or memo["owner_id"] == user["id"]
+def can_access(row, user) -> bool:
+    """메모·폴더 행의 접근 판정은 모두 이 함수 하나로 한다(REST·목록·폴더·연동·실시간 연결).
+
+    공동은 로그인한 누구나, 개인은 소유자만(관리자도 예외 없음), 전율(admin)은 관리자 역할만.
+    False면 호출하는 쪽은 '없는 것'과 똑같이 처리한다(404, 목록 제외, 연결 1008).
+    """
+    if row["kind"] == "admin":
+        return user["role"] == "admin"
+    return row["kind"] == "shared" or row["owner_id"] == user["id"]
+
+
+def can_use_kind(kind, user) -> bool:
+    """이 종류의 목록·새 메모·새 폴더·연동 범위를 쓸 수 있나: 본인 소유 행을 가정해 can_access로 판정한다."""
+    return can_access({"kind": kind, "owner_id": user["id"]}, user)
 
 
 def can_edit(memo, user) -> bool:
@@ -155,6 +166,19 @@ class Rooms:
         await room.stop()
         room.discard()  # 닫는 동안 들어온 편집이 건 타이머까지 한 번 더 정리
 
+    async def revoke(self, code, reason, memo_id=None, user_id=None):
+        """지금 DB 기준으로 접근 권한을 잃은 접속자만 닫는다(메모 이동: memo_id, 관리자 강등·삭제: user_id).
+
+        닫는 동안(await) 들어온 편집을 받지 않도록, 닫을 연결을 모두 먼저 closed로 표시한 뒤 실제로 닫는다.
+        """
+        rooms = [self.get(memo_id)] if memo_id is not None else list(self.server.rooms.values())
+        doomed = [ch for room in rooms if room for ch in list(room.clients)
+                  if (user_id is None or ch.user["id"] == user_id) and not ch.allowed()]
+        for ch in doomed:
+            ch.closed = True
+        for ch in doomed:
+            await ch.close(code, reason)
+
 
 rooms = Rooms()
 router = APIRouter()
@@ -181,7 +205,7 @@ class _Channel:
 
     def __init__(self, ws: WebSocket, path: str, user: dict, can_edit: bool, room: _Room):
         self._ws, self._path, self.user, self.can_edit, self.room = ws, path, user, can_edit, room
-        self.closed = False
+        self.closed = self.joined = False
 
     @property
     def path(self) -> str:
@@ -193,7 +217,26 @@ class _Channel:
     async def __anext__(self) -> bytes:
         return await self.recv()
 
+    def allowed(self) -> bool:
+        """지금 DB 기준(메모 종류·소유자, 내 역할)으로 이 방에 있어도 되나. 확인하지 못하면(DB 오류) 안 된다고 본다."""
+        try:
+            with db.connect() as con:
+                memo = con.execute("SELECT kind, owner_id FROM memos WHERE id=?", (self.room.memo_id,)).fetchone()
+            return bool(memo) and can_access(memo, {**self.user, "role": auth.role_of(self.user["id"])})
+        except sqlite3.Error:
+            log.exception("메모 %s 접속 권한 재확인 실패: 연결을 닫는다", self.room.memo_id)
+            return False  # fail-closed: 접속자는 다시 연결하면 된다(그때 접속 확인을 다시 거친다)
+
     async def send(self, message: bytes) -> None:
+        if not self.joined:
+            # 첫 전송은 방 접속자 목록에 들어간 직후(그 사이 await 없음)다. 접속 확인과 입장 사이에 이동·강등이 끼어들어
+            # revoke가 이 연결을 못 봤을 수 있으니 여기서 한 번 더 확인한다. 이후 변경은 revoke가 본다
+            self.joined = True
+            if not self.allowed():
+                await self.close(1008)
+                return
+        if self.closed:
+            return  # 닫기로 한 연결에는 문서를 더 보내지 않는다
         try:
             await self._ws.send_bytes(message)
         except Exception:  # 막 끊긴 연결: 방 전체(다른 접속자)를 죽이지 않는다. 끊김은 recv가 처리한다
