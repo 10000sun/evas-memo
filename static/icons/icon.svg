@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- 꽉 찬 정사각형: iOS·안드로이드가 알아서 모서리를 깎는다. 그림은 가운데 70% 안에 둔다(마스크 안전 영역) -->
+  <rect width="512" height="512" fill="#3b5bdb"/>
+  <rect x="100" y="120" width="312" height="292" rx="36" fill="#ffffff"/>
+  <path d="M100 156a36 36 0 0 1 36-36h240a36 36 0 0 1 36 36v40H100z" fill="#e57373"/>
+  <rect x="172" y="92" width="22" height="56" rx="11" fill="#ffffff"/>
+  <rect x="318" y="92" width="22" height="56" rx="11" fill="#ffffff"/>
+  <!-- 일정 막대: 달력 칸 안의 범주색 막대를 그대로 옮겼다. 작은 크기에서도 줄무늬로 읽힌다 -->
+  <rect x="156" y="236" width="200" height="38" rx="19" fill="#ffb74d"/>
+  <rect x="156" y="292" width="150" height="38" rx="19" fill="#81c784"/>
+  <rect x="156" y="348" width="176" height="38" rx="19" fill="#64b5f6"/>
+</svg>
