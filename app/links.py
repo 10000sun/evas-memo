@@ -55,14 +55,15 @@ def parse_ids(ids: str):
     return [int(t) for t in toks if t.isascii() and t.isdigit() and len(t) <= 18][:MAX_IDS]
 
 
-def memo_rows(q: str = "", limit: int = 8, ids: str | None = None, user_id: str | None = None, admin=False):
-    """공동 메모 + (user_id를 주면) 그 사람의 개인 메모 + (admin이면) 전율 메모.
+def memo_rows(q: str = "", limit: int = 8, ids: str | None = None, user=None, personal=False, admin=False):
+    """공동 메모 + (personal이면) user의 개인 메모 + (admin이면) 전율 메모. 어느 것이든 ws.can_access를 통과한 것만 나온다.
 
+    user가 없으면(캘린더 내부 API) 가상 사용자 ws.ANON으로 판정한다: 누구에게나 보이는 공동 메모만(비공개 공유 제외).
     기본값으로 부르면 공동만 나온다: 개인·전율 메모는 호출하는 쪽이 권한을 확인하고 명시해야만 나온다.
     """
     where, args, limit = "kind='shared'", [], max(1, min(limit, 20))
-    if user_id:
-        where, args = "(kind='shared' OR (kind='personal' AND owner_id=?))", [user_id]
+    if personal:
+        where, args = "(kind='shared' OR (kind='personal' AND owner_id=?))", [user["id"]]
     if admin:
         where = f"({where} OR kind='admin')"
     if ids is not None:
@@ -75,10 +76,16 @@ def memo_rows(q: str = "", limit: int = 8, ids: str | None = None, user_id: str 
     elif q:  # instr: LIKE와 달리 %, _를 글자 그대로 찾는다
         where += " AND instr(lower(title), lower(?))"
         args.append(q)
+    who, out, cache = user or ws.ANON, [], {}
     with db.connect() as con:
-        return [dict(r) for r in con.execute(
-            f"SELECT id, title, updated_at, kind FROM memos WHERE {where} ORDER BY updated_at DESC, id DESC LIMIT ?",
-            (*args, limit))]
+        # LIMIT을 SQL에 걸면 못 보는 메모가 자리를 차지한다: 최신순으로 훑으며 통과한 것만 limit개 모은다
+        for r in con.execute(f"SELECT {ws.MEMO_ACCESS}, title, updated_at FROM memos WHERE {where} "
+                             "ORDER BY updated_at DESC, id DESC", args):
+            if ws.can_access(r, who, con, cache):
+                out.append({k: r[k] for k in ("id", "title", "updated_at", "kind")})
+                if len(out) >= limit:
+                    break
+    return out
 
 
 @router.get("/internal/link/memos")
@@ -92,7 +99,7 @@ def link_memos(q: str = "", limit: int = 8, ids: str | None = None,
     """scope: shared=공동, all=공동+본인 개인, admin=공동+본인 개인+전율(관리자만, 아니면 없는 경로처럼 404)."""
     if scope == "admin" and not ws.can_use_kind("admin", user):
         raise HTTPException(404)
-    return memo_rows(q, limit, ids, user["id"] if scope != "shared" else None, admin=scope == "admin")
+    return memo_rows(q, limit, ids, user, personal=scope != "shared", admin=scope == "admin")
 
 
 @router.get("/api/link/events")

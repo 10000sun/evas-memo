@@ -24,25 +24,103 @@ def body(doc: Doc) -> str:
     return str(doc.get("text", type=Text))  # 에디터(EvasEditor)가 쓰는 공유 텍스트 이름
 
 
-def can_access(row, user) -> bool:
-    """메모·폴더 행의 접근 판정은 모두 이 함수 하나로 한다(REST·목록·폴더·연동·실시간 연결).
+# 접근 판정에 필요한 열. 이 열을 고르지 않은 행으로 can_access를 부르면 IndexError로 실패한다(조용히 열어 주지 않는다)
+MEMO_ACCESS = "id, kind, owner_id, created_by, visibility, folder_id"
+FOLDER_ACCESS = "id, kind, owner_id, created_by, visibility, parent_id"
+# 로그인하지 않은 쪽(캘린더 내부 API·기록·푸시)이 볼 수 있는가를 같은 함수로 묻기 위한 가상 사용자: 어떤 행의 만든 사람·목록과도 같지 않다
+ANON = {"id": "\u0000anon", "role": "anon"}
+MAX_DEPTH = 5  # 폴더 깊이는 2지만 손상된 순환 데이터에 갇히지 않게
 
-    공동은 로그인한 누구나, 개인은 소유자만(관리자도 예외 없음), 전율(admin)은 관리자 역할만.
-    False면 호출하는 쪽은 '없는 것'과 똑같이 처리한다(404, 목록 제외, 연결 1008).
+
+def restrictor(con, row, cache=None):
+    """공동 행(메모·폴더)의 볼 수 있는 사람을 정하는 항목 (표, id, 만든 사람) 또는 None(전체 공개).
+
+    가장 위 상위 폴더부터 보아 처음 제한인 것이 정한다: 제한 폴더 안의 모든 것(하위 폴더·메모)은 그 폴더 목록을 따르고
+    자신의 설정은 무시된다. 'all'이 아닌 값은 모두 제한으로 본다(fail-closed).
+    """
+    cache = {} if cache is None else cache
+    folders = cache.setdefault("folder", {})
+    is_folder = "parent_id" in row.keys()
+    fid, chain = (row["parent_id"] if is_folder else row["folder_id"]), []
+    for _ in range(MAX_DEPTH):
+        if fid is None:
+            break
+        if fid not in folders:
+            folders[fid] = con.execute(
+                "SELECT id, parent_id, visibility, created_by FROM folders WHERE id=?", (fid,)).fetchone()
+        f = folders[fid]
+        if f is None:
+            break
+        chain.append(("folder_viewers", f["id"], f["created_by"], f["visibility"]))
+        fid = f["parent_id"]
+    chain.reverse()
+    chain.append(("folder_viewers" if is_folder else "memo_viewers", row["id"], row["created_by"], row["visibility"]))
+    return next(((t, i, by) for t, i, by, vis in chain if vis != "all"), None)
+
+
+def viewer_ids(con, r, cache=None):
+    """restrictor가 돌려준 항목의 선택된 사람 id 집합."""
+    cache = {} if cache is None else cache
+    viewers = cache.setdefault("viewers", {})
+    if r[:2] not in viewers:
+        col = "folder_id" if r[0] == "folder_viewers" else "memo_id"
+        viewers[r[:2]] = {v[0] for v in con.execute(f"SELECT user_id FROM {r[0]} WHERE {col}=?", (r[1],))}
+    return viewers[r[:2]]
+
+
+def can_access(row, user, con=None, cache=None) -> bool:
+    """메모·폴더 행의 접근 판정은 모두 이 함수 하나로 한다(REST·목록·폴더·연동·활동·실시간 연결).
+
+    개인은 소유자만(관리자도 예외 없음), 전율(admin)은 관리자 역할만. 공동은 관리자 · 전체 공개 ·
+    (제한이면) 제한을 건 항목의 만든 사람 · 선택된 사람. 폴더 안이면 제한 폴더의 목록·만든 사람이 우선한다(restrictor).
+    False면 호출하는 쪽은 '없는 것'과 똑같이 처리한다(404, 목록 제외, 연결 1008). 공동 행은 DB를 읽는다: con을 주지
+    않으면 따로 연다. 목록을 거를 때는 cache(빈 dict)를 같이 넘겨 폴더·목록 조회를 한 번씩만 하게 한다.
     """
     if row["kind"] == "admin":
         return user["role"] == "admin"
-    return row["kind"] == "shared" or row["owner_id"] == user["id"]
+    if row["kind"] != "shared":
+        return row["owner_id"] == user["id"]
+    if user["role"] == "admin":
+        return True
+    if con is None:
+        with db.connect() as con:
+            return can_access(row, user, con, cache)
+    r = restrictor(con, row, cache)
+    # 만든 사람은 '제한을 거는 항목'의 만든 사람이다: 제한 폴더 안의 메모는 폴더 목록을 따르므로 폴더에서 빠진 메모 작성자도 닫힌다
+    return r is None or user["id"] == r[2] or user["id"] in viewer_ids(con, r, cache)
+
+
+def is_public(row, con, cache=None) -> bool:
+    """누구에게나 보이는 공동 행인가: 활동 기록·푸시·캘린더 연동에 나가도 되는 것. 같은 can_access로 판정한다."""
+    return row["kind"] == "shared" and can_access(row, ANON, con, cache)
 
 
 def can_use_kind(kind, user) -> bool:
     """이 종류의 목록·새 메모·새 폴더·연동 범위를 쓸 수 있나: 본인 소유 행을 가정해 can_access로 판정한다."""
-    return can_access({"kind": kind, "owner_id": user["id"]}, user)
+    return can_access({"kind": kind, "owner_id": user["id"], "id": None, "created_by": user["id"], "visibility": "all",
+                       "folder_id": None}, user)
 
 
-def can_edit(memo, user) -> bool:
-    """공동은 편집자·관리자만(보기 전용은 읽기만), 개인은 소유자."""
-    return can_access(memo, user) and (memo["kind"] == "personal" or user["role"] in ("admin", "editor"))
+def can_edit(memo, user, con=None) -> bool:
+    """공동은 편집자·관리자만(보기 전용은 읽기만. 선택된 사람도 역할 그대로), 개인은 소유자."""
+    return can_access(memo, user, con) and (memo["kind"] == "personal" or user["role"] in ("admin", "editor"))
+
+
+def share_info(con, row, user, cache=None):
+    """응답에 붙이는 공개 범위: visibility(실제로 적용되는 값), inherited(폴더에서 이어받음), can_share, viewers(제한일 때만).
+
+    제한 목록(viewers)은 접근할 수 있는 사람(만든 사람·관리자·선택된 사람)에게만 준다.
+    """
+    r = restrictor(con, row, cache) if row["kind"] == "shared" else None
+    own = ("folder_viewers" if "parent_id" in row.keys() else "memo_viewers", row["id"])
+    out = {"visibility": "all" if r is None else "restricted", "inherited": r is not None and r[:2] != own,
+           "can_share": row["kind"] == "shared" and (user["role"] == "admin" or user["id"] == row["created_by"])}
+    if r is not None and can_access(row, user, con, cache):  # 방금 폴더를 옮겨 접근을 잃은 사람에게도 목록은 안 준다
+        col = "folder_id" if r[0] == "folder_viewers" else "memo_id"
+        out["viewers"] = [dict(v) for v in con.execute(
+            f"SELECT v.user_id AS id, COALESCE(m.name, v.user_id) AS name FROM {r[0]} v LEFT JOIN members m ON m.id=v.user_id "
+            f"WHERE v.{col}=? ORDER BY name, id", (r[1],))]
+    return out
 
 
 def _integrate(doc: Doc, update: bytes) -> bytes | None:
@@ -100,8 +178,8 @@ class _Room(YRoom):
                             "updated_name=COALESCE(?, updated_name), updated_at=? WHERE id=?",
                             (self.ydoc.get_update(), body(self.ydoc), u.get("id"), u.get("name"), db.now(),
                              self.memo_id))
-                m = con.execute("SELECT kind, title FROM memos WHERE id=?", (self.memo_id,)).fetchone()
-                if m and m["kind"] == "shared" and u.get("id"):  # 개인 메모는 기록하지 않는다
+                m = con.execute(f"SELECT {MEMO_ACCESS}, title FROM memos WHERE id=?", (self.memo_id,)).fetchone()
+                if m and is_public(m, con) and u.get("id"):  # 개인·전율·비공개 공유 메모는 기록하지 않는다(제목이 새지 않게)
                     activity.log(con, "edit", self.memo_id, m["title"], u)
         except sqlite3.Error:
             log.exception("메모 %s 저장 실패: %s초 뒤 다시 시도", self.memo_id, SAVE_DELAY)
@@ -225,8 +303,8 @@ class _Channel:
         """지금 DB 기준(메모 종류·소유자, 내 역할)으로 이 방에 있어도 되나. 확인하지 못하면(DB 오류) 안 된다고 본다."""
         try:
             with db.connect() as con:
-                memo = con.execute("SELECT kind, owner_id FROM memos WHERE id=?", (self.room.memo_id,)).fetchone()
-            return bool(memo) and can_access(memo, {**self.user, "role": auth.role_of(self.user["id"])})
+                memo = con.execute(f"SELECT {MEMO_ACCESS} FROM memos WHERE id=?", (self.room.memo_id,)).fetchone()
+                return bool(memo) and can_access(memo, {**self.user, "role": auth.role_of(self.user["id"])}, con)
         except sqlite3.Error:
             log.exception("메모 %s 접속 권한 재확인 실패: 연결을 닫는다", self.room.memo_id)
             return False  # fail-closed: 접속자는 다시 연결하면 된다(그때 접속 확인을 다시 거친다)
@@ -281,11 +359,17 @@ class _Channel:
 async def memo_ws(websocket: WebSocket, memo_id: int):
     # 수락 전에 확인한다. 로그인 안 함·없는 메모·남의 개인 메모를 구별하지 않고 1008(정책 위반)로 닫는다
     user = auth.user_of(websocket.session, websocket.headers.get("x-user-id"))
-    with db.connect() as con:
-        memo = con.execute("SELECT kind, owner_id FROM memos WHERE id=?", (memo_id,)).fetchone()
-    if not user or not memo or not can_access(memo, user):
+    try:
+        with db.connect() as con:
+            memo = con.execute(f"SELECT {MEMO_ACCESS} FROM memos WHERE id=?", (memo_id,)).fetchone()
+            allowed = bool(user and memo and can_access(memo, user, con))
+            editable = allowed and can_edit(memo, user, con)
+    except sqlite3.Error:
+        log.exception("메모 %s 접속 권한 확인 실패: 연결을 거절한다", memo_id)
+        allowed = False  # fail-closed
+    if not allowed:
         await websocket.close(1008)
         return
     await websocket.accept()
     room = await rooms.server.get_room(str(memo_id))
-    await rooms.server.serve(_Channel(websocket, str(memo_id), user, can_edit(memo, user), room))
+    await rooms.server.serve(_Channel(websocket, str(memo_id), user, editable, room))

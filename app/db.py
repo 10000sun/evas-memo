@@ -16,7 +16,8 @@ DEFAULT_CATEGORIES = [
 FOLDERS = """CREATE TABLE IF NOT EXISTS folders(
   id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL CHECK(kind IN ('personal','shared','admin')),
   owner_id TEXT, parent_id INTEGER REFERENCES folders(id) ON DELETE CASCADE, name TEXT NOT NULL,
-  created_by TEXT, created_name TEXT, created_at TEXT)"""
+  created_by TEXT, created_name TEXT, created_at TEXT,
+  visibility TEXT NOT NULL DEFAULT 'all' CHECK(visibility IN ('all','restricted')))"""
 # AUTOINCREMENT: 지운 메모의 id를 다시 쓰지 않는다(아직 열려 있는 옛 메모의 실시간 방에 새 메모가 섞이지 않게)
 MEMOS = """CREATE TABLE IF NOT EXISTS memos(
   id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL CHECK(kind IN ('personal','shared','admin')),
@@ -25,7 +26,8 @@ MEMOS = """CREATE TABLE IF NOT EXISTS memos(
   folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL,
   body_text TEXT NOT NULL DEFAULT '', ydoc BLOB,
   created_by TEXT, created_name TEXT, updated_by TEXT, updated_name TEXT,
-  created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"""
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  visibility TEXT NOT NULL DEFAULT 'all' CHECK(visibility IN ('all','restricted')))"""
 
 SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS categories(
@@ -44,6 +46,11 @@ CREATE TABLE IF NOT EXISTS users(
 -- 접속 기록일 뿐 권한과 무관하다(권한은 users). 운영 DB에는 IF NOT EXISTS로 표만 더해진다
 CREATE TABLE IF NOT EXISTS members(
   id TEXT PRIMARY KEY, name TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL);
+-- 비공개 공유: visibility='restricted'인 공동 메모·폴더를 볼 수 있는 사람(만든 사람·관리자는 목록과 무관하게 항상 본다)
+CREATE TABLE IF NOT EXISTS memo_viewers(
+  memo_id INTEGER NOT NULL REFERENCES memos(id) ON DELETE CASCADE, user_id TEXT NOT NULL, PRIMARY KEY(memo_id, user_id));
+CREATE TABLE IF NOT EXISTS folder_viewers(
+  folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE, user_id TEXT NOT NULL, PRIMARY KEY(folder_id, user_id));
 """
 
 
@@ -101,6 +108,9 @@ def init():
         # 폴더 도입 전 운영 DB: memos가 이미 있어 CREATE가 건너뛰어지므로 열만 덧붙인다(데이터 그대로)
         if "folder_id" not in {r["name"] for r in con.execute("PRAGMA table_info(memos)")}:
             con.execute("ALTER TABLE memos ADD COLUMN folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL")
+        # 반드시 표 재작성(_allow_admin_kind)보다 먼저: 재작성은 새 정의의 열 이름으로 복사하므로 옛 표에도 열이 있어야 한다
+        for t in ("memos", "folders"):
+            _add_visibility(con, t)
         for name, create in (("folders", FOLDERS), ("memos", MEMOS)):
             _allow_admin_kind(con, name, create)
         if not con.execute("SELECT 1 FROM categories").fetchone():
@@ -108,6 +118,20 @@ def init():
         # 첫 관리자는 웹에서 만들 수 없으니(닭과 달걀) 환경변수로 시드한다
         for uid in filter(None, os.environ.get("EVAS_ADMIN_IDS", "").split(",")):
             con.execute("INSERT OR IGNORE INTO users(id,name,role) VALUES(?,?, 'admin')", (uid.strip(),) * 2)
+
+
+def _add_visibility(con, table):
+    """공개 범위 열을 ALTER로 덧붙인다(운영 DB 데이터 그대로, 기본 'all'). 멱등: 이미 있으면 아무것도 안 한다."""
+    def has():
+        return "visibility" in {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}
+    if has():
+        return
+    try:
+        con.execute(f"ALTER TABLE {table} ADD COLUMN visibility TEXT NOT NULL DEFAULT 'all' "
+                    "CHECK(visibility IN ('all','restricted'))")
+    except sqlite3.OperationalError:
+        if not has():  # 다른 프로세스가 동시에 먼저 붙인 경우만 넘어간다
+            raise
 
 
 def _allow_admin_kind(con, name, create):
@@ -134,7 +158,9 @@ def _allow_admin_kind(con, name, create):
         old_seq = con.execute("SELECT seq FROM sqlite_sequence WHERE name=?", (name,)).fetchone()
         new = name + "_new"
         con.execute(create.replace(f"EXISTS {name}(", f"EXISTS {new}(", 1))
-        cols = ", ".join(r["name"] for r in con.execute(f"PRAGMA table_info({new})"))  # 옛 표는 ALTER로 붙은 열 순서가 다르다
+        # 옛 표는 ALTER로 붙은 열 순서가 다르다. 옛 표에 아직 없는 열(visibility)은 새 표의 기본값으로 채운다
+        have = {r["name"] for r in con.execute(f"PRAGMA table_info({name})")}
+        cols = ", ".join(r["name"] for r in con.execute(f"PRAGMA table_info({new})") if r["name"] in have)
         con.execute(f"INSERT INTO {new}({cols}) SELECT {cols} FROM {name}")
         con.execute(f"DROP TABLE {name}")
         con.execute(f"ALTER TABLE {new} RENAME TO {name}")

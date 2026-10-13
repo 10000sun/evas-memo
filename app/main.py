@@ -177,9 +177,13 @@ def list_activity(user=Depends(current_user)):
         con.execute("INSERT OR IGNORE INTO activity_read(user_id,last_id) SELECT ?, COALESCE(MAX(id),0) FROM activity", (user["id"],))
         last = con.execute("SELECT last_id FROM activity_read WHERE user_id=?", (user["id"],)).fetchone()[0]
         items = rows(con, "SELECT * FROM activity ORDER BY id DESC LIMIT 50")
-        # 공동 메모가 바뀌었는지 화면이 값 비교로 알아채도록 하는 표식. 개인 메모는 섞이지 않는다
-        rev = con.execute("SELECT COALESCE((SELECT MAX(id) FROM activity),0) || ':' || COUNT(*) || ':' || COALESCE(MAX(updated_at),'') "
-                          "FROM memos WHERE kind='shared'").fetchone()[0]
+        # 공동 메모가 바뀌었는지 화면이 값 비교로 알아채도록 하는 표식. 개인 메모는 섞이지 않고, 비공개 공유 메모는
+        # 볼 수 있는 사람의 표식에만 들어간다(목록에 없는 사람은 그 메모의 생성·수정·삭제로 표식이 바뀌지 않는다)
+        cache = {}
+        mine = [m for m in con.execute(f"SELECT {ws.MEMO_ACCESS}, updated_at FROM memos WHERE kind='shared'")
+                if ws.can_access(m, user, con, cache)]
+        rev = (f"{con.execute('SELECT COALESCE(MAX(id),0) FROM activity').fetchone()[0]}:{len(mine)}:"
+               f"{max((m['updated_at'] for m in mine), default='')}")
     for i in items:
         i["unread"] = i["id"] > last and i["actor_id"] != user["id"]
     return {"items": items, "unread": sum(i["unread"] for i in items), "rev": rev}
