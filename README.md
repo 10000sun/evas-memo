@@ -5,7 +5,7 @@
 ## 실행 (Windows 서버)
 1. `python -m pip install -r requirements.txt`
 2. `.env.example`을 `.env`로 복사해 채운다 (`.env`는 깃에 안 올라가므로 수동 복사)
-3. `python -m uvicorn app.main:app --host 127.0.0.1 --port 8000`
+3. `python -m uvicorn app.main:app --host 127.0.0.1 --port 8001`
 4. 바깥에서 접속: [docs/DEPLOY.md](docs/DEPLOY.md) (포트포워딩 + DuckDNS + Caddy HTTPS)
 
 데이터는 `data/evas.db`(깃 제외). 백업은 이 파일을 복사하면 된다.

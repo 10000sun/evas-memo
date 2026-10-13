@@ -1,5 +1,6 @@
-# Caddy가 HTTPS 인증서를 자동 발급·갱신하고, 들어온 요청을 메모 앱(내부 8000번)으로 넘긴다.
+# Caddy가 HTTPS 인증서를 자동 발급·갱신하고, 들어온 요청을 메모 앱(내부 8001번)으로 넘긴다.
+# 포트는 .env의 EVAS_PORT(기본 8001, 캘린더의 8000과 겹치지 않게).
 # DOMAIN은 .env의 PUBLIC_URL에서 https:// 를 뺀 주소(예: mymemo.duckdns.org)
 {$DOMAIN} {
-	reverse_proxy 127.0.0.1:8000
+	reverse_proxy 127.0.0.1:{$PORT:8001}
 }
