@@ -11,10 +11,21 @@ const when = (iso) => new Date(iso).toLocaleString("ko-KR", { dateStyle: "medium
 const el = (tag, props = {}, ...kids) => {
   const n = Object.assign(document.createElement(tag), props); n.append(...kids); return n;
 };
-// 같이 쓰는 사람의 커서 색. 사용자 id마다 늘 같은 색(에디터가 #rrggbb + 투명도 두 자리를 붙여 쓴다)
-const PEER = ["#e03131", "#c2255c", "#9c36b5", "#6741d9", "#3b5bdb", "#1971c2", "#0c8599", "#099268", "#2f9e44", "#e8590c"];
+// 같이 쓰는 사람의 커서 색. 사용자 id마다 선호 색이 있고, 같이 접속한 사람과 겹치면 assignDistinctColor가 빈 색으로 바꾼다.
+// 흰 이름표 글자·라이트·다크 배경 모두와 명암비 3.3 이상(에디터가 #rrggbb + 투명도 두 자리를 붙여 쓴다)
+const PEER = ["#e03131", "#c2255c", "#ae3ec9", "#7048e8", "#4263eb", "#1c7ed6", "#0c8599", "#099268", "#2f9e44", "#5c940d", "#e8590c", "#b35c00"];
 const colorOf = (id) => PEER[[...String(id)].reduce((h, c) => (h * 31 + c.codePointAt(0)) >>> 0, 0) % PEER.length];
 const status = (t) => ($("e-status").textContent = t);
+// 편집 | 미리보기. 미리보기는 무해화한 HTML(EvasMarkdown)이고 본문이 바뀌면(다른 사람 입력 포함) 잠깐 뒤 다시 그린다
+let mode = "edit", previewTimer;
+const renderPreview = () => { if (ed && mode === "preview") $("e-preview").innerHTML = EvasMarkdown.render(ed.view.state.doc.toString()); };
+function setMode(m) {
+  mode = m;
+  for (const b of document.querySelectorAll("[data-mode]")) b.setAttribute("aria-pressed", b.dataset.mode === m);
+  $("e-body").hidden = m === "preview"; $("e-preview").hidden = m !== "preview";
+  renderPreview();
+}
+for (const b of document.querySelectorAll("[data-mode]")) b.onclick = () => setMode(b.dataset.mode);
 
 // --- 목록 ---
 let listReq = 0;
@@ -134,7 +145,9 @@ function watch(e, id) {
   p.on("status", ({ status: s }) => ed === e && s !== "connected" && status(s === "connecting" ? "연결 중…" : "연결 끊김 · 다시 연결되면 저장됩니다"));
   p.on("sync", (ok) => ed === e && ok && status("저장됨"));
   p.doc.on("update", (_u, origin) => {
-    if (ed !== e || origin === p) return; // origin === p: 서버에서 받은 변경
+    if (ed !== e) return;
+    clearTimeout(previewTimer); previewTimer = setTimeout(renderPreview, 200);
+    if (origin === p) return; // origin === p: 서버에서 받은 변경
     if (!p.wsconnected) return status("연결 끊김 · 다시 연결되면 저장됩니다");
     // 서버는 받은 편집을 2초 안에 저장한다(ws.SAVE_DELAY). 확인 응답은 없어 입력이 멎고 3초 뒤 저장됨으로 본다
     status("저장 중…"); clearTimeout(idle);
@@ -142,6 +155,7 @@ function watch(e, id) {
   });
   aw.on("change", () => {
     if (ed !== e) return;
+    assignDistinctColor(aw, colorOf(me.id), PEER);
     const names = new Set();
     for (const [client, s] of aw.getStates()) if (client !== aw.clientID && s.user) names.add(s.user.name);
     $("e-peers").textContent = names.size ? "같이 보는 사람: " + [...names].join(", ") : "";
@@ -171,7 +185,8 @@ async function closeMemo() {
   await saveTitle();
   if (ed) { const e = ed; ed = null; e.destroy(); }
   cur = null; deleting = false;
-  $("e-body").replaceChildren(); $("e-peers").textContent = ""; status("");
+  clearTimeout(previewTimer); setMode("edit");
+  $("e-body").replaceChildren(); $("e-preview").replaceChildren(); $("e-peers").textContent = ""; status("");
 }
 
 function leave(text) {

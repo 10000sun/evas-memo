@@ -11,4 +11,20 @@ function parseColor(text) {
   const rgb = m.slice(1, 4).map(Number);
   return rgb.some((n) => n > 255) ? null : "#" + rgb.map((n) => n.toString(16).padStart(2, "0")).join("");
 }
-if (typeof module !== "undefined") module.exports = { parseColor };
+// 같이 편집하는 사람끼리 커서 색이 겹치지 않게 한다(awareness change마다 부른다). 같은 색을 쓰는 다른 접속자 중
+// clientID가 내 것보다 작은 사람이 있으면 내가 아무도 안 쓰는 첫 색으로 옮긴다. 작은 쪽은 그대로라 서로 번갈아 바뀌지 않고,
+// 안 겹치면 아무것도 바꾸지 않는다(깜빡임 방지)
+function assignDistinctColor(awareness, myPreferred, palette) {
+  const mine = awareness.getLocalState()?.user;
+  if (!mine) return;
+  const color = mine.color || myPreferred, used = new Set();
+  let clash = false;
+  for (const [id, s] of awareness.getStates()) {
+    if (id === awareness.clientID || !s.user) continue;
+    used.add(s.user.color);
+    if (s.user.color === color && id < awareness.clientID) clash = true;
+  }
+  const free = clash && palette.find((c) => !used.has(c));
+  if (free) awareness.setLocalStateField("user", { ...mine, color: free, colorLight: free + "33" }); // 빈 색이 없으면 겹침을 받아들인다
+}
+if (typeof module !== "undefined") module.exports = { parseColor, assignDistinctColor };

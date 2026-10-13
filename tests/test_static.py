@@ -26,3 +26,15 @@ def test_export_function_present(client):
 def test_api_still_wins_over_static(client):
     # 루트 정적 마운트가 API를 가리면 안 된다
     assert client.get("/api/me").status_code == 401
+
+
+def test_markdown_bundle_served(client):
+    r = client.get("/vendor/markdown.bundle.js")
+    assert r.status_code == 200
+    assert "EvasMarkdown" in r.text
+
+
+def test_index_has_preview_toggle(client):
+    t = client.get("/").text
+    assert 'data-mode="preview"' in t and 'id="e-preview"' in t
+    assert "vendor/markdown.bundle.js" in t
