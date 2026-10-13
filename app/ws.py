@@ -9,7 +9,7 @@ from fastapi import APIRouter, WebSocket
 from pycrdt import Doc, Text, YMessageType, YSyncMessageType, create_update_message, read_message
 from pycrdt.websocket import WebsocketServer, YRoom
 
-from . import auth, db
+from . import activity, auth, db
 
 MAX_CHARS = 100_000
 MAX_BYTES = 5_000_000  # 들어오는 업데이트와 문서 전체(Yjs 상태) 바이트 상한. text 밖 루트 타입으로 키우는 것도 막는다
@@ -78,6 +78,9 @@ class _Room(YRoom):
                         "updated_name=COALESCE(?, updated_name), updated_at=? WHERE id=?",
                         (self.ydoc.get_update(), body(self.ydoc), u.get("id"), u.get("name"), db.now(),
                          self.memo_id))
+            m = con.execute("SELECT kind, title FROM memos WHERE id=?", (self.memo_id,)).fetchone()
+            if m and m["kind"] == "shared" and u.get("id"):  # 개인 메모는 기록하지 않는다
+                activity.log(con, "edit", self.memo_id, m["title"], u)
 
     def discard(self):
         """저장하지 않는다(메모가 지워짐)."""

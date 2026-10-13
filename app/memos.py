@@ -2,11 +2,11 @@
 import sqlite3
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pycrdt import Doc
 from pydantic import BaseModel
 
-from . import db, ws
+from . import activity, db, push, ws
 from .auth import current_user, editor
 
 router = APIRouter(prefix="/api/memos")
@@ -65,9 +65,13 @@ def list_memos(kind: Literal["personal", "shared"], category_id: int | None = No
 
 
 @router.post("", status_code=201)
-def add_memo(m: MemoIn, user=Depends(editor)):
+def add_memo(m: MemoIn, bg: BackgroundTasks, user=Depends(editor)):
     with db.connect() as con:
-        return _out(con, _insert(con, user, m.kind, m.title, m.category_id))
+        mid = _insert(con, user, m.kind, m.title, m.category_id)
+        if m.kind == "shared":  # 개인 메모는 기록·푸시가 없다
+            activity.log(con, "add", mid, m.title, user)
+            bg.add_task(push.notify, "add", m.title, user)
+        return _out(con, mid)
 
 
 @router.get("/{mid}")
@@ -81,7 +85,8 @@ def get_memo(mid: int, user=Depends(current_user)):
 def edit_memo(mid: int, m: MemoEdit, user=Depends(current_user)):
     fields = m.model_dump(exclude_unset=True)  # 보낸 필드만 바꾼다(category_id: null은 분류 해제)
     with db.connect() as con:
-        if not ws.can_edit(_get(con, mid, user), user):
+        memo = _get(con, mid, user)
+        if not ws.can_edit(memo, user):
             raise HTTPException(403, "권한이 없습니다")
         sets = "".join(f"{k}=?, " for k in fields)
         try:
@@ -89,27 +94,36 @@ def edit_memo(mid: int, m: MemoEdit, user=Depends(current_user)):
                         (*fields.values(), user["id"], user["name"], db.now(), mid))
         except sqlite3.IntegrityError:
             raise HTTPException(400, "없는 분류입니다")
-        return _out(con, mid)
+        out = _out(con, mid)
+        if memo["kind"] == "shared":
+            activity.log(con, "edit", mid, out["title"], user)
+        return out
 
 
 @router.delete("/{mid}", status_code=204)
-async def del_memo(mid: int, user=Depends(current_user)):
+async def del_memo(mid: int, bg: BackgroundTasks, user=Depends(current_user)):
     # async: 열린 방(이벤트 루프 소유)을 같은 루프에서 내린다
     with db.connect() as con:
         m = _get(con, mid, user)  # 개인 메모는 여기서 이미 소유자만 남는다
         if m["kind"] == "shared" and m["created_by"] != user["id"] and user["role"] != "admin":
             raise HTTPException(403, "작성자와 관리자만 지울 수 있습니다")
         con.execute("DELETE FROM memos WHERE id=?", (mid,))
+        if m["kind"] == "shared":
+            activity.log(con, "delete", mid, m["title"], user)
+            bg.add_task(push.notify, "delete", m["title"], user)
     await ws.rooms.drop(mid)
 
 
 @router.post("/{mid}/share")
-def share_memo(mid: int, user=Depends(editor)):
+def share_memo(mid: int, bg: BackgroundTasks, user=Depends(editor)):
     """개인 -> 공동 '이동': 같은 행, 같은 Yjs 문서. 종류만 바뀐다."""
     with db.connect() as con:
-        if _get(con, mid, user)["kind"] != "personal":
+        m = _get(con, mid, user)
+        if m["kind"] != "personal":
             raise HTTPException(409, "이미 공동 메모입니다")
         con.execute("UPDATE memos SET kind='shared' WHERE id=?", (mid,))
+        activity.log(con, "add", mid, m["title"], user)
+        bg.add_task(push.notify, "add", m["title"], user)
         return _out(con, mid)
 
 
