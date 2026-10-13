@@ -47,13 +47,103 @@ marked.use({
   },
 });
 
+// 디스코드식 문법. 원시 HTML은 지원하지 않아 글자 그대로 보인다(블록 html·인라인 tag 토크나이저를 끈다. 아래 DOMPurify는 이중 방어).
+// 토크나이저가 undefined를 돌려주면 기본 규칙으로 넘어가지 않는다(false여야 넘어간다)
+const none = () => undefined;
+// 쌍 기호(__ ||): src 맨 앞 기호 두 개가 여는 쪽. 같은 문단(빈 줄 앞)에서 닫는 쪽을 찾아 {raw, inner}를 돌려준다.
+// 닫는 쪽은 기호가 이어진 덩어리의 마지막 두 개이고 앞에 \가 홀수 개면 이스케이프다. 한 문단은 LIMIT자 이하라 최악의 탐색도 짧다
+function pairAt(src, ch, wordGuard) {
+  const mark = ch + ch, blank = src.indexOf("\n\n"), lim = blank < 0 ? src.length : blank;
+  const body = ch === "|" ? /[^\s|]/ : /[^\s_]/;
+  for (let j = 2; (j = src.indexOf(mark, j)) !== -1 && j < lim;) {
+    let k = j, bs = 0;
+    while (k < lim && src[k] === ch) k++;
+    for (let b = j - 1; b >= 2 && src[b] === "\\"; b--) bs++;
+    const c = k - 2;
+    if (c >= j + (bs % 2) && c > 2 && !(wordGuard && /[A-Za-z0-9]/.test(src[k] || "")) && body.test(src.slice(2, c))) return { raw: src.slice(0, k), inner: src.slice(2, c) };
+    j = k;
+  }
+}
+const pairStart = (mark) => (src) => { const i = src.indexOf(mark); return i < 0 ? undefined : i; };
+// 글자 색 {이름|글자}: 디스코드에 없는 우리 문법. 이름은 한글 두 글자
+const COLORS = { 빨강: "red", 주황: "orange", 노랑: "yellow", 초록: "green", 파랑: "blue", 보라: "purple", 분홍: "pink", 회색: "gray" };
+let inBigQuote = false; // >>> 안에서는 다시 >>>를 큰 인용으로 보지 않는다(중첩 깊이 제한)
+marked.use({
+  extensions: [
+    { // __밑줄__: 기본 굵게보다 먼저 맞춘다. 영숫자 바로 뒤의 __ 와 영숫자 바로 앞의 __ 는 밑줄이 아니다(snake__case)
+      name: "underline", level: "inline", start: pairStart("__"),
+      tokenizer(src, tokens) {
+        if (src[0] !== "_" || src[1] !== "_") return;
+        const prev = tokens.length ? tokens[tokens.length - 1].raw.slice(-1) : "";
+        if (/[A-Za-z0-9]/.test(prev)) return;
+        const m = pairAt(src, "_", true);
+        return m && { type: "underline", raw: m.raw, text: m.inner, tokens: this.lexer.inlineTokens(m.inner) };
+      },
+      renderer(t) { return `<u>${this.parser.parseInline(t.tokens)}</u>`; },
+    },
+    { // ||스포일러||: 눌러야 보인다(app.js)
+      name: "spoiler", level: "inline", start: pairStart("||"),
+      tokenizer(src) {
+        if (src[0] !== "|" || src[1] !== "|") return;
+        const m = pairAt(src, "|", false);
+        return m && { type: "spoiler", raw: m.raw, text: m.inner, tokens: this.lexer.inlineTokens(m.inner) };
+      },
+      renderer(t) { return `<span class="md-spoiler" tabindex="0">${this.parser.parseInline(t.tokens)}</span>`; },
+    },
+    { // {빨강|글자}: 같은 줄의 첫 } 까지
+      name: "color", level: "inline", start: pairStart("{"),
+      tokenizer(src) {
+        const name = COLORS[src.slice(1, 3)];
+        if (src[0] !== "{" || !name || src[3] !== "|") return;
+        const end = src.indexOf("}", 4), nl = src.indexOf("\n", 4);
+        if (end < 5 || (nl >= 0 && nl < end)) return;
+        const inner = src.slice(4, end);
+        return { type: "color", raw: src.slice(0, end + 1), text: inner, color: name, tokens: this.lexer.inlineTokens(inner) };
+      },
+      renderer(t) { return `<span class="md-c" data-c="${t.color}">${this.parser.parseInline(t.tokens)}</span>`; },
+    },
+    { // -# 작은 글씨: 줄 맨 앞, 공백 필요
+      name: "subtext", level: "block",
+      start(src) { const e = src.indexOf("\n\n"), i = (e < 0 ? src : src.slice(0, e)).search(/\n {0,3}-# /); return i < 0 ? undefined : i; },
+      tokenizer(src) {
+        const m = /^ {0,3}-# +([^\n]*)(?:\n|$)/.exec(src);
+        if (!m || !m[1].trim()) return;
+        const tok = { type: "subtext", raw: m[0], text: m[1].trim(), tokens: [] };
+        this.lexer.inline(tok.text, tok.tokens);
+        return tok;
+      },
+      renderer(t) { return `<p class="md-sub">${this.parser.parseInline(t.tokens)}</p>\n`; },
+    },
+    { // >>> 문서 끝까지 한 인용(> 한 줄 인용은 marked 기본)
+      name: "bigquote", level: "block",
+      start(src) { const e = src.indexOf("\n\n"), i = (e < 0 ? src : src.slice(0, e)).search(/\n {0,3}>>>[ \t]/); return i < 0 ? undefined : i; },
+      tokenizer(src) {
+        const m = /^ {0,3}>>>[ \t]+/.exec(src);
+        if (!m || inBigQuote || !src.slice(m[0].length).trim()) return;
+        const { lexer } = this, top = lexer.state.top;
+        inBigQuote = true; lexer.state.top = true;
+        try { return { type: "blockquote", raw: src, text: src.slice(m[0].length), tokens: lexer.blockTokens(src.slice(m[0].length), []) }; }
+        finally { inBigQuote = false; lexer.state.top = top; }
+      },
+    },
+  ],
+  tokenizer: {
+    html: none, tag: none, lheading: none, // 원시 HTML과 밑줄 줄(===, ---) 제목은 글자 그대로
+    heading(src) { // 제목은 # ## ### 만: 그 이상은 글자 그대로의 문단
+      const m = /^ {0,3}(#{4,6})(?=\s|$)(.*)(?:\n+|$)/.exec(src);
+      if (!m) return false;
+      const text = m[0].replace(/\n+$/, "").trim();
+      return { type: "paragraph", raw: m[0], text, tokens: this.lexer.inline(text) };
+    },
+  },
+});
 
 // marked의 짝 없는 강조(* _ ~~)·링크 처리는 한 문단(빈 줄 사이 덩어리) 안에서 글 길이의 제곱에 가깝게 느려진다(node+jsdom 실측: 6000자 한 문단 최악 약 0.3~1초).
 // 문단이 길면 보는 모두의 화면이 멈추므로 ① 한 블록이 LIMIT자를 넘으면 그 블록만 잘라 그리고(블록이 모두 짧으면 전체가 길어도 자르지 않는다)
 // ② 문단별 비용 추정(서식 기호 덩어리 수 x 글자 수)의 합이 BUDGET을 넘게 되는 블록부터는 서식 없이 글 그대로 보여 준다.
 const LIMIT = 6000;
 const BUDGET = 2e7; // 실측 비용은 대략 5e-8~1.5e-7초 x 추정치(느린 상태 기준 최대 약 3초). 6000자 이하 한 블록(덩어리 최대 3000 x 6000 = 1.8e7)은 항상 이 안이라 짧은 글은 검사를 건너뛴다
-const DELIM = /[*_~`[<]+/g; // 연속한 서식 기호 하나를 한 덩어리로 센다(**a 는 1개)
+const DELIM = /[*_~`[<|{]+/g; // 연속한 서식 기호 하나를 한 덩어리로 센다(**a 는 1개)
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 // 코드 펜스 상태를 한 줄 진행한다: 열려 있으면 그 표시(```·~~~), 아니면 null. 펜스 안의 빈 줄은 블록을 나누지 않는다
 const step = (fence, line) => {
