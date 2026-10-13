@@ -39,10 +39,7 @@
 <div id="msg" class="notice" hidden></div>
 
 <section id="list-view" hidden>
-  <div class="tabs" role="group" aria-label="메모 종류">
-    <button type="button" data-tab="personal" aria-pressed="false">개인</button>
-    <button type="button" data-tab="shared" aria-pressed="false">공동</button>
-  </div>
+  <div id="tabs" class="tabs" role="group" aria-label="메모 종류"></div><!-- 탭 버튼은 app.js가 역할에 맞는 종류만 만든다 -->
   <div id="folders" class="folders" role="group" aria-label="폴더"></div>
   <div id="subfolders" class="folders sub" role="group" aria-label="하위 폴더" hidden></div>
   <div id="folder-tools" class="folder-tools" hidden>
@@ -77,7 +74,7 @@
   <p id="e-meta" class="meta"></p>
   <div class="btns">
     <button type="button" id="e-export" class="btn ghost">내보내기</button>
-    <button type="button" id="e-move" class="btn ghost" hidden>공동으로 옮기기</button>
+    <div id="e-moves" class="moves"></div>
     <button type="button" id="e-copy" class="btn ghost" hidden>개인으로 복사</button>
     <span></span>
     <button type="button" id="e-del" class="btn danger">삭제</button>
@@ -88,7 +85,7 @@
   <div class="n-head"><h2>사용 방법</h2><button type="button" id="help-close" class="btn ghost">닫기</button></div>
 
   <h3>기본 사용법</h3>
-  <ul>
+  <ul id="help-basic">
     <li><b>개인</b> 메모는 나만 보고, <b>공동</b> 메모는 로그인한 모든 사람이 보고 고칩니다.</li>
     <li>새 메모는 위쪽 <b>+ 메모</b>를 누릅니다. 지금 보고 있는 탭(개인·공동)에 만들어집니다.</li>
     <li>메모를 누르면 편집 화면이 열립니다. 본문은 치는 대로 저장되고, 같은 메모를 연 사람의 커서와 이름이 사람마다 다른 색으로 보입니다.</li>

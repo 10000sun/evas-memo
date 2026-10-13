@@ -76,3 +76,19 @@ def test_memolink_node_unit_tests():
     r = subprocess.run(["node", "--test", str(Path(__file__).parent / "memolink.test.js")],
                        capture_output=True, text=True, encoding="utf-8", timeout=60)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_admin_space_not_in_static_page(client):
+    # 전율 탭·옮기기 버튼·안내는 관리자에게만 app.js가 만든다: 정적 HTML에는 흔적이 없어야 한다
+    t = client.get("/").text
+    assert "전율" not in t and "data-tab=" not in t
+    assert 'id="tabs"' in t and 'id="e-moves"' in t and 'id="help-basic"' in t
+
+
+def test_admin_space_ui_rules(client):
+    a = client.get("/app.js").text
+    assert 'admin: {' in a and 'scope: "admin"' in a and "visible: isAdmin" in a
+    for s in ("관리자만 볼 수 있게 됩니다(공동 메모였다면 다른 사람에게는 사라집니다)", "모든 사람에게 보입니다",
+              "나만 볼 수 있게 됩니다(다른 관리자에게도 사라집니다)", "관리자 권한이 없어 닫혔습니다"):
+        assert s in a, s
+    assert "/move`" in a and "code === 4403" in a

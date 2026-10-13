@@ -6,31 +6,47 @@ try { tab = localStorage.getItem("tab") || tab; } catch { /* 저장이 막혀 �
 // 함수는 (me[, 폴더]) -> bool. scope: 그 종류 본문의 @ 힌트가 부르는 /api/link/memos 범위,
 // lookup: 그 종류 본문의 연결 칩이 메모 최신 제목을 물을 때의 범위(내 개인 메모 링크는 어디 있든 내게는 제목이 보인다)
 const editor = (u) => !!u && u.role !== "viewer";
+const isAdmin = (u) => !!u && u.role === "admin";
 const yes = () => true, no = () => false;
+const lookupMine = (u) => (isAdmin(u) ? "admin" : "all"); // 관리자에게는 어느 메모에서든 전율 메모 링크의 제목도 보인다
+// moves: 편집 화면 'OO로 옮기기' 버튼 {옮길 종류: (me) -> 보일지}. 버튼 글자·확인창 문구는 옮길 종류의 moveLabel·moveNote
 const KINDS = {
   personal: {
-    name: "개인 메모", empty: "개인 메모가 없습니다. + 메모로 새로 만드세요.", scope: "all", lookup: "all",
-    accent: false, // 편집 화면 종류 표시를 강조색으로
+    label: "개인", name: "개인 메모", empty: "개인 메모가 없습니다. + 메모로 새로 만드세요.", scope: "all", lookup: lookupMine,
+    moveLabel: "개인으로 옮기기", moveNote: "나만 볼 수 있게 됩니다(다른 관리자에게도 사라집니다)",
+    accent: "", // 편집 화면 종류 표시의 색(style.css .badge.<accent>)
+    badge: false, // 메모 카드에 종류 표시. 이 종류의 탭은 기억(localStorage)하지 않는다
     author: true, // 메모 카드에 마지막 수정한 사람 표시
-    visible: yes, // 탭을 보일지
+    visible: yes, // 탭을 만들지(아니면 탭 버튼·도움말 항목을 DOM에 만들지 않는다)
     create: editor, // 새 메모(서버 add_memo: 편집자 이상)
     edit: yes, // 제목·분류·폴더·본문 편집(서버 ws.can_edit: 개인은 본인만 보이므로 본인)
     folderCreate: yes, // 폴더 만들기·이름 바꾸기(개인 폴더는 본인 것만 보인다)
     folderDelete: yes,
-    toShared: editor, // 편집 화면 '공동으로 옮기기'(서버: 편집자 이상)
+    moves: { shared: editor, admin: isAdmin }, // 공동으로(서버 /share: 편집자 이상), 전율로(서버 /move: 소유자이면서 관리자)
     toPersonal: no, // '개인으로 복사'
     del: yes, // 삭제 버튼
     delConfirm: "이 메모를 삭제할까요?\n되돌릴 수 없습니다.",
     inRev: false, // /api/activity의 rev에 변경이 잡히는지(안 잡히면 20초마다 목록을 다시 받는다)
   },
   shared: {
-    name: "공동 메모", empty: "공동 메모가 없습니다.", scope: "shared", lookup: "all",
-    accent: true, author: true, visible: yes, create: editor, edit: editor, folderCreate: editor,
+    label: "공동", name: "공동 메모", empty: "공동 메모가 없습니다.", scope: "shared", lookup: lookupMine,
+    moveLabel: "공동으로 옮기기", moveNote: "모든 사람에게 보입니다",
+    accent: "shared", badge: false, author: true, visible: yes, create: editor, edit: editor, folderCreate: editor,
     folderDelete: (u, f) => f.created_by === u.id || u.role === "admin", // 만든 사람·관리자
-    toShared: no, toPersonal: yes,
+    moves: { admin: isAdmin }, toPersonal: yes,
     del: editor, // 작성자·관리자만 지워진다: 편집자에게는 보이고 아니면 서버가 이유를 알려준다
     delConfirm: "이 공동 메모를 삭제할까요?\n모든 사람에게서 사라지고 되돌릴 수 없습니다.",
     inRev: true,
+  },
+  // 전율: 관리자 전원이 보고 고친다(서버는 비관리자에게 종류 자체를 404로 숨긴다). 활동 기록·rev에 없어 20초마다 목록을 받는다
+  admin: {
+    label: "전율", name: "전율 메모", empty: "전율 메모가 없습니다.", scope: "admin", lookup: () => "admin",
+    moveLabel: "전율로 옮기기", moveNote: "관리자만 볼 수 있게 됩니다(공동 메모였다면 다른 사람에게는 사라집니다)",
+    accent: "admin", badge: true, author: true, visible: isAdmin, create: isAdmin, edit: isAdmin,
+    folderCreate: isAdmin, folderDelete: isAdmin,
+    moves: { shared: isAdmin, personal: isAdmin }, toPersonal: no, del: isAdmin,
+    delConfirm: "이 전율 메모를 삭제할까요?\n모든 관리자에게서 사라지고 되돌릴 수 없습니다.",
+    inRev: false,
   },
 };
 let conf = {}; // /api/config: 앱 주소들(memo_url·calendar_url)과 캘린더 연동 켜짐(link)
@@ -39,7 +55,8 @@ const linkBases = () => ({ event: conf.calendar_url, memo: conf.memo_url }); // 
 const deep = new URLSearchParams(location.search).get("memo");
 if (deep !== null) history.replaceState(null, "", location.pathname + (/^\d+$/.test(deep) ? "#" + deep : ""));
 if (!KINDS[tab]) tab = "shared";
-const saveTab = () => { try { localStorage.setItem("tab", tab); } catch { /* 이번 화면에서만 기억 */ } };
+// 전율 탭(badge)은 기억하지 않는다: 같은 PC를 쓰는 비관리자의 저장소에 흔적을 남기지 않게
+const saveTab = () => { try { if (!KINDS[tab].badge) localStorage.setItem("tab", tab); } catch { /* 이번 화면에서만 기억 */ } };
 // 탭(종류)이 바뀌면 폴더 선택은 처음(전체)부터
 function setTab(k) {
   if (k !== tab) { tab = k; folders = []; fsel = ""; }
@@ -87,21 +104,26 @@ async function refreshList() {
   if (n !== listReq) return;
   let rows;
   try { rows = await api(`/api/memos?kind=${tab}` + (fsel !== "" ? "&folder_id=" + fsel : "") + (q ? "&q=" + encodeURIComponent(q) : "")); }
-  catch (e) { if (n === listReq) toast("목록을 불러오지 못했습니다: " + e.message); return; }
+  catch (e) {
+    // 그 사이 역할이 바뀌어(관리자 강등) 이 탭을 못 쓰게 됐으면 syncMe가 탭을 바꾸고 목록을 다시 받는다
+    if (n === listReq && !(await syncMe()) && n === listReq) toast("목록을 불러오지 못했습니다: " + e.message);
+    return;
+  }
   if (n !== listReq) return;
   memos = rows;
   renderList();
 }
 
 function card(m) {
-  const c = catOf(m.category_id);
+  const c = catOf(m.category_id), k = KINDS[m.kind];
   const a = el("a", { href: "#" + m.id, className: "memo" },
     el("strong", { textContent: m.title || "제목 없음" }),
     el("p", { className: "preview", textContent: m.body_text }),
     ...(folderPath(m.folder_id) ? [el("div", { className: "meta path", textContent: folderPath(m.folder_id) })] : []),
     el("div", { className: "meta" },
+      ...(k.badge ? [el("span", { className: "badge " + k.accent, textContent: k.label })] : []),
       ...(c ? [el("i", { className: "dot", style: `background:${c.color}` }), c.name + " · "] : []),
-      (KINDS[m.kind].author ? `${m.updated_name || "알 수 없음"} · ` : "") + when(m.updated_at)));
+      (k.author ? `${m.updated_name || "알 수 없음"} · ` : "") + when(m.updated_at)));
   if (c) a.style.borderLeftColor = c.color;
   return el("li", {}, a);
 }
@@ -195,9 +217,34 @@ function syncTabs() {
   for (const b of document.querySelectorAll("[data-tab]")) b.setAttribute("aria-pressed", b.dataset.tab === tab);
   if (me) $("add").hidden = !KINDS[tab].create(me); // 편집 중에는 tab이 열린 메모의 종류
 }
-for (const b of document.querySelectorAll("[data-tab]")) b.onclick = () => {
-  setTab(b.dataset.tab); memos = []; paintFolders(); renderList(); refreshList();
-};
+function showTab(k) { setTab(k); memos = []; paintFolders(); renderList(); refreshList(); }
+$("tabs").onclick = (e) => { const b = e.target.closest("[data-tab]"); if (b) showTab(b.dataset.tab); };
+// 역할에 따라 달라지는 화면: 탭 버튼(보이는 종류만 만든다), 관리 링크, 관리자 도움말. 지금 탭을 못 쓰게 됐으면 공동으로
+function paintRole() {
+  $("tabs").replaceChildren(...Object.entries(KINDS).filter(([, k]) => k.visible(me)).map(([kind, k]) => {
+    const b = el("button", { type: "button", textContent: k.label });
+    b.dataset.tab = kind;
+    return b;
+  }));
+  $("admin-link").hidden = !isAdmin(me);
+  $("help-admin")?.remove(); // 전율 안내는 관리자에게만 DOM에 넣는다
+  if (isAdmin(me)) $("help-basic").append(el("li", { id: "help-admin" },
+    el("b", { textContent: "전율" }), " 탭은 관리자만 보고 함께 고치는 메모 공간입니다(폴더·분류·검색·미리보기·내보내기는 다른 탭과 같고, 알림·변경 내역에는 남지 않습니다). 편집 화면의 ",
+    el("b", { textContent: "전율로 옮기기" }), "로 개인·공동 메모를 전율로, ", el("b", { textContent: "공동으로 옮기기" }), "·",
+    el("b", { textContent: "개인으로 옮기기" }), "로 전율 메모를 내보냅니다(복사가 아니라 이동이고 폴더는 '폴더 없음'이 됩니다). 전율 메모 본문의 ",
+    el("code", { textContent: "@" }), "는 공동·내 개인·전율 메모를 모두 고를 수 있습니다."));
+  const gone = !KINDS[tab].visible(me);
+  if (gone) setTab("shared");
+  syncTabs();
+  return gone;
+}
+// /api/me를 다시 받아 역할을 반영한다. 지금 탭을 못 쓰게 돼 공동으로 바꿨으면 목록을 다시 받고 true
+async function syncMe() {
+  try { me = await api("/api/me"); } catch { return false; }
+  if (!paintRole()) return false;
+  if (!cur) showTab(tab);
+  return true;
+}
 let searchTimer;
 $("search").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(refreshList, 250); };
 
@@ -234,8 +281,13 @@ addEventListener("pagehide", () => saveTitle(true));
 function paintMemo() {
   const m = cur, k = KINDS[m.kind];
   $("e-kind").textContent = k.name;
-  $("e-kind").classList.toggle("shared", k.accent);
-  $("e-move").hidden = !k.toShared(me);
+  $("e-kind").className = "badge " + k.accent;
+  // 옮기기 버튼은 보일 것만 만든다(비관리자 화면에는 '전율로 옮기기'가 DOM에도 없다). 같은 목록이면 두어 포커스를 지킨다
+  const to = Object.keys(k.moves).filter((t) => k.moves[t](me));
+  if ($("e-moves").dataset.to !== to.join()) {
+    $("e-moves").dataset.to = to.join();
+    $("e-moves").replaceChildren(...to.map((t) => el("button", { type: "button", className: "btn ghost", textContent: KINDS[t].moveLabel, onclick: () => move(t) })));
+  }
   $("e-copy").hidden = !k.toPersonal(me);
   $("e-del").hidden = !k.del(me);
   $("e-meta").textContent = `작성 ${m.created_name || "알 수 없음"} · 마지막 수정 ${m.updated_name || "알 수 없음"} (${when(m.updated_at)})`;
@@ -253,8 +305,15 @@ async function refreshCur() {
   const id = cur.id;
   refreshFolders();
   paintChips("all"); // 칩의 제목·삭제 여부도 다시 묻는다
-  try { const m = await api(`/api/memos/${id}`); if (cur && cur.id === id) { cur = m; fillForm(); } }
-  catch { /* 지워졌으면 실시간 연결이 알려준다 */ }
+  try {
+    const m = await api(`/api/memos/${id}`);
+    if (cur && cur.id === id) { const moved = m.kind !== cur.kind; cur = m; moved ? kindChanged() : fillForm(); }
+  } catch { /* 지워졌거나 못 보게 됐으면 실시간 연결이 알려준다 */ }
+}
+// 열린 메모의 종류가 바뀜(내가·다른 관리자가 옮김): 탭·폴더·버튼을 새 종류에 맞춘다. 못 고치게 됐으면 목록으로
+function kindChanged() {
+  if (!canEditMemo(cur)) return leave("이 메모를 고칠 수 없게 되었습니다");
+  setTab(cur.kind); fillForm(); refreshFolders(); // 옮기면 폴더는 '폴더 없음'(서버)
 }
 
 // --- 일정·메모 연결 ---
@@ -305,7 +364,7 @@ async function lookupLinks(found, all) {
     try {
       for (let i = 0; i < ids.length; i += 50) { // 메모 서버의 ids 상한(50)에 맞춰 나눠 묻는다
         const part = ids.slice(i, i + 50).join(",");
-        const rows = await api(kind === "event" ? `/api/link/events?ids=${part}` : `/api/link/memos?scope=${KINDS[m.kind].lookup}&ids=${part}`);
+        const rows = await api(kind === "event" ? `/api/link/events?ids=${part}` : `/api/link/memos?scope=${KINDS[m.kind].lookup(me)}&ids=${part}`);
         if (!Array.isArray(rows)) throw new Error("응답 형식");
         got.push(...rows);
       }
@@ -362,7 +421,9 @@ function watch(e, id) {
   p.on("connection-close", (ev) => {
     if (ed !== e) return; // 내가 닫은 연결
     const code = ev && ev.code;
-    if (code === 4404) return leave(deleting ? "삭제했습니다" : "메모가 삭제되었습니다");
+    // 4404: 삭제, 또는 다른 관리자가 옮겨 내가 못 보게 됨(비관리자에게 전율로 옮긴 것을 드러내지 않게 같은 문구)
+    if (code === 4404) return leave(deleting ? "삭제했습니다" : "메모가 삭제되었거나 볼 수 없게 되었습니다");
+    if (code === 4403) { leave("관리자 권한이 없어 닫혔습니다"); syncMe(); return; } // 강등: 전율 탭도 치운다
     if (code === 1009) {
       // 넘친 편집은 서버가 버렸다. 그대로 두면 다시 연결할 때마다 같은 편집을 보내 또 끊기므로 서버 내용으로 다시 연다
       toast("본문은 100,000자까지입니다. 넘친 입력은 저장되지 않았습니다");
@@ -387,6 +448,9 @@ async function closeMemo() {
   clearTimeout(previewTimer); setMode("edit");
   clearTimeout(chipTimer); chipSeq++; linkInfo.clear(); $("e-links").hidden = true;
   $("e-body").replaceChildren(); $("e-preview").replaceChildren(); $("e-links").replaceChildren(); $("e-peers").textContent = ""; status("");
+  // 닫은 메모의 흔적(제목·종류·폴더 이름)을 숨은 편집 화면에 남기지 않는다: 관리자에서 내려간 사람에게 전율 내용이 남지 않게
+  $("e-title").value = $("e-kind").textContent = $("e-meta").textContent = "";
+  $("e-folder").replaceChildren(); $("e-moves").replaceChildren(); $("e-moves").dataset.to = "";
 }
 
 function leave(text) {
@@ -399,15 +463,18 @@ $("e-export").onclick = async () => {
   const r = await exportMemo($("e-title").value.trim() || "제목 없음", ed ? ed.view.state.doc.toString() : "");
   if (r) toast(EXPORTED[r]);
 };
-$("e-move").onclick = async () => {
-  if (!confirm("이 메모를 공동 메모로 옮길까요?\n모든 사람에게 보입니다. 개인 메모에는 남지 않습니다.")) return;
+// 옮기기(같은 메모·같은 문서, 복사 아님). 개인 -> 공동만 기존 /share, 전율이 끼는 이동은 /move
+async function move(to) {
+  const from = cur.kind, id = cur.id;
+  if (!confirm(`이 메모를 ${KINDS[to].name}로 옮길까요?\n${KINDS[to].moveNote}.\n${KINDS[from].name}에는 남지 않습니다.`)) return;
   await saveTitle();
   try {
-    cur = await api(`/api/memos/${cur.id}/share`, { method: "POST" });
-    setTab(cur.kind); fillForm(); refreshFolders(); // 옮기면 폴더는 '폴더 없음'(서버)
-    toast("공동 메모로 옮겼습니다");
+    const m = from === "personal" && to === "shared" ? await api(`/api/memos/${id}/share`, { method: "POST" })
+      : await api(`/api/memos/${id}/move`, { method: "POST", body: JSON.stringify({ to }) });
+    toast(`${KINDS[to].name}로 옮겼습니다`);
+    if (cur && cur.id === id) { cur = m; kindChanged(); }
   } catch (e) { toast(e.message); }
-};
+}
 $("e-copy").onclick = async () => {
   if (!confirm("이 공동 메모를 내 개인 메모로 복사할까요?\n원본 공동 메모는 그대로 남고, 사본은 나만 봅니다.")) return;
   await saveTitle();
@@ -453,9 +520,7 @@ async function start() {
   initBell();
   // 앱 전환: 캘린더 주소가 http(s)로 설정돼 있을 때만 링크(같은 탭)
   if (MemoLink.base(conf.calendar_url)) { $("to-cal").href = conf.calendar_url + "/"; $("apps-other").hidden = false; }
-  for (const b of document.querySelectorAll("[data-tab]")) b.hidden = !KINDS[b.dataset.tab].visible(me);
-  if (!KINDS[tab].visible(me)) setTab("shared");
-  $("admin-link").hidden = me.role !== "admin";
+  paintRole();
   $("who").textContent = me.name;
   $("logout").hidden = false;
   $("logout").onclick = () => fetch("/auth/logout", { method: "POST" }).then(() => location.reload());
@@ -475,7 +540,6 @@ async function start() {
     renderList();
   }
   $("legend").replaceChildren(...chips, reset);
-  syncTabs();
   route();
 }
 start();
