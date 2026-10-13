@@ -1,16 +1,134 @@
-"""메모별 실시간 공동 편집 방(Yjs 중계). pycrdt-websocket의 WebsocketServer/YRoom을 FastAPI WebSocket에 붙인다."""
+"""메모별 실시간 공동 편집 방(Yjs 중계). pycrdt-websocket의 WebsocketServer/YRoom을 FastAPI WebSocket에 붙인다.
+
+방은 DB의 memos.ydoc에서 복원하고, 바뀌면 SAVE_DELAY초 안에, 마지막 접속자가 나갈 때, 서버가 꺼질 때 저장한다.
+"""
+import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from pycrdt import Doc
-from pycrdt.websocket import WebsocketServer
+from fastapi import APIRouter, WebSocket
+from pycrdt import Doc, Text, YMessageType, YSyncMessageType, read_message
+from pycrdt.websocket import WebsocketServer, YRoom
+
+from . import auth, db
+
+MAX_CHARS = 100_000
+SAVE_DELAY = 2  # 초. 편집이 계속돼도 첫 변경 뒤 이만큼 지나면 저장한다(재시작 손실을 줄이려고 미루기만 하지 않는다)
+_EDITS = (YSyncMessageType.SYNC_STEP2, YSyncMessageType.SYNC_UPDATE)  # 문서를 바꾸는 동기화 메시지
+
+
+def body(doc: Doc) -> str:
+    return str(doc.get("text", type=Text))  # 에디터(EvasEditor)가 쓰는 공유 텍스트 이름
+
+
+def can_access(memo, user) -> bool:
+    """공동은 로그인한 누구나, 개인은 소유자만(관리자도 예외 없음)."""
+    return memo["kind"] == "shared" or memo["owner_id"] == user["id"]
+
+
+def can_edit(memo, user) -> bool:
+    """공동은 편집자·관리자만(보기 전용은 읽기만), 개인은 소유자."""
+    return can_access(memo, user) and (memo["kind"] == "personal" or user["role"] in ("admin", "editor"))
+
+
+def _too_long(doc: Doc, update: bytes) -> bool:
+    # 늘어나는 글자 수는 업데이트 바이트 수를 넘지 못한다(UTF-8) -> 대부분은 문서를 복제하지 않고 끝난다
+    if len(body(doc)) + len(update) <= MAX_CHARS:
+        return False
+    trial = Doc()
+    trial.apply_update(doc.get_update())
+    trial.apply_update(update)
+    return len(body(trial)) > MAX_CHARS
+
+
+class _Room(YRoom):
+    """DB 메모 한 개의 방. 바뀌면 SAVE_DELAY초 뒤에 ydoc/body_text/updated_*를 저장한다."""
+
+    def __init__(self, memo_id: int):
+        doc = Doc()
+        with db.connect() as con:
+            row = con.execute("SELECT ydoc FROM memos WHERE id=?", (memo_id,)).fetchone()
+        if row and row["ydoc"]:
+            doc.apply_update(row["ydoc"])
+        super().__init__(ydoc=doc)
+        self.memo_id, self.editor, self._timer = memo_id, None, None
+        self._sub = doc.observe(self._changed)
+
+    def _changed(self, _event):
+        if self._timer is None:
+            self._timer = asyncio.get_running_loop().call_later(SAVE_DELAY, self.save)
+
+    def save(self):
+        """바뀐 게 있으면 지금 저장한다. 동기 함수라 저장 도중에 다른 접속이 끼어들지 않는다."""
+        if self._timer is None:
+            return
+        self._timer.cancel()
+        self._timer = None
+        u = self.editor or {}
+        with db.connect() as con:
+            con.execute("UPDATE memos SET ydoc=?, body_text=?, updated_by=COALESCE(?, updated_by), "
+                        "updated_name=COALESCE(?, updated_name), updated_at=? WHERE id=?",
+                        (self.ydoc.get_update(), body(self.ydoc), u.get("id"), u.get("name"), db.now(),
+                         self.memo_id))
+
+    async def stop(self):
+        self.ydoc.unobserve(self._sub)
+        await super().stop()
+        # 구독 객체는 만든 스레드에서 버려야 한다(아니면 종료 때 "Subscription is unsendable" 경고)
+        self._sub = self._subscription = None
+
+
+class _Server(WebsocketServer):
+    async def get_room(self, name: str) -> YRoom:
+        if name not in self.rooms:
+            self.rooms[name] = _Room(int(name))
+        return await super().get_room(name)
+
+    async def delete_room(self, *, name=None, room=None):
+        # 마지막 접속자가 나감: 방을 내리기 전에 저장해야 곧바로 들어온 사람이 옛 DB를 읽지 않는다
+        (room or self.rooms[name]).save()
+        await super().delete_room(name=name, room=room)
+
+
+class Rooms:
+    """메모 id별 방 관리자. 서버 객체는 이벤트 루프에 묶이므로 앱이 시작할 때마다 새로 만든다(lifespan)."""
+
+    def __init__(self):
+        self.server = _Server(auto_clean_rooms=True)
+
+    def get(self, memo_id):
+        """열려 있는 방(없으면 None)."""
+        return self.server.rooms.get(str(memo_id))
+
+
+rooms = Rooms()
+router = APIRouter()
+
+
+async def get_doc(memo_id) -> Doc:
+    """DB의 ydoc로 복원한 방의 문서(이미 열려 있으면 그 방)."""
+    return (await rooms.server.get_room(str(memo_id))).ydoc
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    global rooms
+    rooms = Rooms()
+    async with rooms.server:
+        try:
+            yield
+        finally:
+            for name in list(rooms.server.rooms):  # 꺼지기 전에 모두 저장하고 내린다
+                await rooms.server.delete_room(name=name)
 
 
 class _Channel:
-    """FastAPI WebSocket을 pycrdt의 Channel 규약(path/send/recv/async 반복)에 맞춘 어댑터."""
+    """FastAPI WebSocket을 pycrdt의 Channel 규약(path/send/recv/async 반복)에 맞춘 어댑터.
 
-    def __init__(self, ws: WebSocket, path: str):
-        self._ws, self._path = ws, path
+    받은 메시지를 방에 넘기기 전에 거른다: 보기 전용의 편집은 버리고, 100,000자를 넘기는 편집은 연결을 1009로 닫는다.
+    """
+
+    def __init__(self, ws: WebSocket, path: str, user: dict, can_edit: bool):
+        self._ws, self._path, self.user, self.can_edit = ws, path, user, can_edit
 
     @property
     def path(self) -> str:
@@ -23,36 +141,39 @@ class _Channel:
         return await self.recv()
 
     async def send(self, message: bytes) -> None:
-        await self._ws.send_bytes(message)
+        try:
+            await self._ws.send_bytes(message)
+        except Exception:  # 막 끊긴 연결: 방 전체(다른 접속자)를 죽이지 않는다. 끊김은 recv가 처리한다
+            pass
 
     async def recv(self) -> bytes:
-        try:
-            return await self._ws.receive_bytes()
-        except WebSocketDisconnect:
-            raise StopAsyncIteration
-
-
-class Rooms:
-    """메모 id별 방 관리자. shortcut: 문서는 메모리에만 있다(방이 비면 사라짐) -> Task 3에서 DB 로드/저장으로 교체."""
-
-    def __init__(self):
-        self.server = WebsocketServer(auto_clean_rooms=True)
-
-    async def get_doc(self, memo_id) -> Doc:
-        return (await self.server.get_room(str(memo_id))).ydoc
-
-
-rooms = Rooms()
-router = APIRouter()
-
-
-@asynccontextmanager
-async def lifespan(_app):
-    async with rooms.server:
-        yield
+        while True:
+            msg = await self._ws.receive()
+            if msg["type"] == "websocket.disconnect":
+                raise StopAsyncIteration
+            data = msg.get("bytes")
+            if not data:  # 텍스트 프레임 등 Yjs가 아닌 메시지
+                await self._ws.close(1003)
+                raise StopAsyncIteration
+            if data[0] == YMessageType.SYNC and len(data) > 1 and data[1] in _EDITS:
+                if not self.can_edit:
+                    continue  # 보기 전용: 받기만 하고 적용하지 않는다
+                room = rooms.get(self._path)
+                if _too_long(room.ydoc, read_message(data[2:])):
+                    await self._ws.close(1009)  # 메시지가 너무 큼: 본문 100,000자 제한
+                    raise StopAsyncIteration
+                room.editor = self.user
+            return data
 
 
 @router.websocket("/ws/memos/{memo_id}")
 async def memo_ws(websocket: WebSocket, memo_id: int):
+    # 수락 전에 확인한다. 로그인 안 함·없는 메모·남의 개인 메모를 구별하지 않고 1008(정책 위반)로 닫는다
+    user = auth.user_of(websocket.session, websocket.headers.get("x-user-id"))
+    with db.connect() as con:
+        memo = con.execute("SELECT kind, owner_id FROM memos WHERE id=?", (memo_id,)).fetchone()
+    if not user or not memo or not can_access(memo, user):
+        await websocket.close(1008)
+        return
     await websocket.accept()
-    await rooms.server.serve(_Channel(websocket, str(memo_id)))
+    await rooms.server.serve(_Channel(websocket, str(memo_id), user, can_edit(memo, user)))

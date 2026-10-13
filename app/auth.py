@@ -8,11 +8,50 @@ import secrets
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+
+from . import db
 
 router = APIRouter()
 DISCORD = "https://discord.com"
+
+
+def user_of(session, x_user_id: str | None = None):
+    """세션(또는 개발용 헤더) -> {id, name, role}, 로그인 안 했으면 None. HTTP와 WebSocket이 같이 쓴다.
+
+    shortcut: 개발용 헤더 인증(EVAS_DEV_AUTH=1일 때만 켜짐)이 남아 있다. 운영 .env에는 넣지 말 것.
+    """
+    uid, name = session.get("uid"), session.get("name")
+    if not uid and os.environ.get("EVAS_DEV_AUTH") == "1" and x_user_id:
+        uid, name = x_user_id, x_user_id
+    if not uid:
+        return None
+    with db.connect() as con:
+        row = con.execute("SELECT role FROM users WHERE id=?", (uid,)).fetchone()
+    # 팀 방침에 따라 EVAS_OPEN_EDIT=1이면 로그인한 누구나 편집자. 분류·권한 관리는 계속 관리자만
+    default = "editor" if os.environ.get("EVAS_OPEN_EDIT") == "1" else "viewer"
+    return {"id": uid, "name": name, "role": row["role"] if row else default}
+
+
+def current_user(request: Request, x_user_id: str | None = Header(default=None)):
+    """로그인한 사용자 {id, name, role}. role: admin / editor / viewer."""
+    user = user_of(request.session, x_user_id)
+    if not user:
+        raise HTTPException(401, "로그인이 필요합니다")
+    return user
+
+
+def need(*roles):
+    def dep(user=Depends(current_user)):
+        if user["role"] not in roles:
+            raise HTTPException(403, "권한이 없습니다")
+        return user
+    return dep
+
+
+editor = need("admin", "editor")
+admin = need("admin")
 
 
 def cfg():

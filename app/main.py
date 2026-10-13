@@ -1,16 +1,18 @@
 import os
 import re
 import secrets
+import sqlite3
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 from starlette.middleware.sessions import SessionMiddleware
 
 load_dotenv()  # .env의 토큰·비밀값을 읽는다(깃에는 올리지 않는다)
 
-from . import auth, db, ws  # noqa: E402  (db.init이 EVAS_ADMIN_IDS를 읽기 전에 .env를 불러와야 한다)
+from . import auth, db, memos, ws  # noqa: E402  (db.init이 EVAS_ADMIN_IDS를 읽기 전에 .env를 불러와야 한다)
+from .auth import admin, current_user  # noqa: E402
 
 app = FastAPI(title="evas-memo", lifespan=ws.lifespan)
 # shortcut: SESSION_SECRET이 없으면 실행할 때마다 새로 만든다 -> 서버를 재시작하면 모두 로그아웃. 운영에서는 .env에 고정할 것
@@ -18,40 +20,12 @@ app.add_middleware(SessionMiddleware, secret_key=os.environ.get("SESSION_SECRET"
                    https_only=os.environ.get("PUBLIC_URL", "").startswith("https"),
                    same_site="lax", max_age=60 * 60 * 24 * 30)
 app.include_router(auth.router)
+app.include_router(memos.router)
 app.include_router(ws.router)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 db.init()
 
 COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
-
-
-def current_user(request: Request, x_user_id: str | None = Header(default=None)):
-    """로그인한 사용자 {id, name, role}. role: admin / editor / viewer.
-
-    shortcut: 개발용 헤더 인증(EVAS_DEV_AUTH=1일 때만 켜짐)이 남아 있다. 운영 .env에는 넣지 말 것.
-    """
-    uid, name = request.session.get("uid"), request.session.get("name")
-    if not uid and os.environ.get("EVAS_DEV_AUTH") == "1" and x_user_id:
-        uid, name = x_user_id, x_user_id
-    if not uid:
-        raise HTTPException(401, "로그인이 필요합니다")
-    with db.connect() as con:
-        row = con.execute("SELECT role FROM users WHERE id=?", (uid,)).fetchone()
-    # 팀 방침에 따라 EVAS_OPEN_EDIT=1이면 로그인한 누구나 편집자. 분류·권한 관리는 계속 관리자만
-    default = "editor" if os.environ.get("EVAS_OPEN_EDIT") == "1" else "viewer"
-    return {"id": uid, "name": name, "role": row["role"] if row else default}
-
-
-def need(*roles):
-    def dep(user=Depends(current_user)):
-        if user["role"] not in roles:
-            raise HTTPException(403, "권한이 없습니다")
-        return user
-    return dep
-
-
-editor = need("admin", "editor")
-admin = need("admin")
 
 
 class CategoryIn(BaseModel):
@@ -106,7 +80,7 @@ def add_category(c: CategoryIn, _=Depends(admin)):
     with db.connect() as con:
         try:
             cur = con.execute("INSERT INTO categories(name,color) VALUES(?,?)", (c.name, c.color))
-        except Exception:
+        except sqlite3.IntegrityError:
             raise HTTPException(409, "이미 있는 분류 이름입니다")
         return {"id": cur.lastrowid, **c.model_dump()}
 
@@ -116,7 +90,7 @@ def edit_category(cid: int, c: CategoryIn, _=Depends(admin)):
     with db.connect() as con:
         try:
             cur = con.execute("UPDATE categories SET name=?, color=? WHERE id=?", (c.name, c.color, cid))
-        except Exception:
+        except sqlite3.IntegrityError:
             raise HTTPException(409, "이미 있는 분류 이름입니다")
         if not cur.rowcount:
             raise HTTPException(404)

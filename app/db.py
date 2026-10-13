@@ -1,6 +1,7 @@
 import os
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime
 
 DEFAULT_CATEGORIES = [
     ("공지", "#e57373"), ("아이디어", "#ffb74d"), ("할 일", "#64b5f6"), ("참고", "#81c784"),
@@ -9,8 +10,9 @@ DEFAULT_CATEGORIES = [
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS categories(
   id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, color TEXT NOT NULL);
+-- AUTOINCREMENT: 지운 메모의 id를 다시 쓰지 않는다(아직 열려 있는 옛 메모의 실시간 방에 새 메모가 섞이지 않게)
 CREATE TABLE IF NOT EXISTS memos(
-  id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('personal','shared')),
+  id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL CHECK(kind IN ('personal','shared')),
   owner_id TEXT, title TEXT NOT NULL DEFAULT '',
   category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
   body_text TEXT NOT NULL DEFAULT '', ydoc BLOB,
@@ -26,6 +28,10 @@ CREATE TABLE IF NOT EXISTS push_subs(
 CREATE TABLE IF NOT EXISTS users(
   id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('admin','editor')));
 """
+
+
+def now():
+    return datetime.now().isoformat(timespec="seconds")
 
 
 def db_path():
