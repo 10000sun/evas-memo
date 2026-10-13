@@ -26,6 +26,8 @@ const MemoLink = (() => {
     out.push(text.slice(last));
     return out.filter((x) => x !== "");
   }
-  return { base, escape, make, parse };
+  // 딥링크 ?memo=<값>의 id. 아스키 숫자 1~18자리만(길거나 숫자가 아니면 ""), 앞의 0은 뗀다: ?memo=007 -> "7"
+  const deepId = (s) => (typeof s === "string" && /^[0-9]{1,18}$/.test(s) ? s.replace(/^0+(?=\d)/, "") : "");
+  return { base, escape, make, parse, deepId };
 })();
 if (typeof module !== "undefined") module.exports = MemoLink;

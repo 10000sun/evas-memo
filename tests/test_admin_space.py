@@ -172,6 +172,7 @@ def test_shared_to_admin_closes_non_admin_connections(c, monkeypatch):
             r = move(c, s, "admin", "boss")
             assert r.status_code == 200 and r.json()["body_text"] == "저장 전"  # 열린 방의 편집을 먼저 저장
             assert wait_closed(pa) == 4404
+            assert pa.closed.reason == "메모가 삭제되었습니다"  # 옮겨졌다는 사실을 알리지 않는다(삭제 때와 같은 사유)
             pb.text += "!"
             pb.push()
             pb.pump()
@@ -319,7 +320,7 @@ def test_revoke_fails_closed_on_db_error(c, monkeypatch):
                 raise sqlite3.OperationalError("database is locked")
 
             monkeypatch.setattr(ws.auth, "role_of", locked)
-            c.portal.call(ws.rooms.revoke, 4404, "메모가 옮겨졌습니다", s)
+            c.portal.call(ws.rooms.revoke, 4404, ws.GONE_REASON, s)
             assert wait_closed(p) == 4404
 
 

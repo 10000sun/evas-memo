@@ -71,3 +71,11 @@ test("닫히지 않은 [@가 많아도 1초 안에 끝난다", () => {
     assert.ok(ms < 1000, `${s.slice(0, 12)}… ${ms}ms`);
   }
 });
+
+test("딥링크 id: 앞의 0을 떼고, 아스키 숫자 1~18자리만 받는다", () => {
+  for (const [s, want] of [["7", "7"], ["007", "7"], ["0", "0"], ["000", "0"], ["10", "10"], ["9".repeat(18), "9".repeat(18)], ["0".repeat(17) + "5", "5"]])
+    assert.strictEqual(M.deepId(s), want, s);
+  for (const s of ["", "a", "1a", "-1", "1.5", " 7", "7\n", "٧", "９", "9".repeat(19), null, undefined])
+    assert.strictEqual(M.deepId(s), "", String(s)); // 아랍·전각 숫자, 너무 긴 값, 숫자가 아닌 값은 무시
+  assert.strictEqual(links(M.make("x", MEMO, "007"))[0].id, "7"); // 칩 링크는 #007 이든 #7 이든 같은 id
+});

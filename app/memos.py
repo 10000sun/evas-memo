@@ -237,5 +237,5 @@ async def move_memo(mid: int, mv: MoveIn, bg: BackgroundTasks, user=Depends(curr
             activity.log(con, "add", mid, out["title"], user)
             bg.add_task(push.notify, "add", out["title"], user)
     # 커밋 뒤 await 없이 이어서: 계속 볼 수 있는 접속자는 두고 나머지만 닫는다
-    await ws.rooms.revoke(4404, "메모가 옮겨졌습니다", memo_id=mid)
+    await ws.rooms.revoke(4404, ws.GONE_REASON, memo_id=mid)  # 삭제와 같은 사유: 옮겨졌다는 사실을 알리지 않는다
     return out

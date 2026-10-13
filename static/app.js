@@ -53,7 +53,7 @@ let conf = {}; // /api/config: 앱 주소들(memo_url·calendar_url)과 캘린�
 const linkBases = () => ({ event: conf.calendar_url, memo: conf.memo_url }); // MemoLink 종류별 앱 주소
 // 딥링크 /?memo=<id> -> #<id>(편집 화면). 새로고침해도 다시 뛰지 않게 쿼리는 지운다
 const deep = new URLSearchParams(location.search).get("memo");
-if (deep !== null) history.replaceState(null, "", location.pathname + (/^\d+$/.test(deep) ? "#" + deep : ""));
+if (deep !== null) history.replaceState(null, "", location.pathname + (MemoLink.deepId(deep) ? "#" + MemoLink.deepId(deep) : ""));
 if (!KINDS[tab]) tab = "shared";
 // 전율 탭(badge)은 기억하지 않는다: 같은 PC를 쓰는 비관리자의 저장소에 흔적을 남기지 않게
 const saveTab = () => { try { if (!KINDS[tab].badge) localStorage.setItem("tab", tab); } catch { /* 이번 화면에서만 기억 */ } };
