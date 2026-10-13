@@ -137,7 +137,7 @@ const setup = [
 
 // @ 태그 힌트. "@글자"(@ 앞은 줄 처음이나 공백, 글자에 공백·@ 없음)를 치면 화면이 준 linkSource(kind, q)로 일정·메모를 받아
 // 종류별로 나눠 보여 준다. 번들은 네트워크를 모른다: linkSource는 [{title, detail?, text}](text: 넣을 링크 원문)를 주거나, 실패하면 예외
-const LINK_KINDS = [["event", "일정"], ["memo", "메모"]];
+const LINK_KINDS = [["event", "일정"], ["memo", "메모"], ["user", "사람"]];
 const AT = /@[^\s@]{0,30}$/;
 // 커서 바로 앞 "@글자"의 @ 위치(조건이 안 맞으면 -1)
 function atFrom(state) {

@@ -69,6 +69,9 @@ let folders = [], fsel = ""; // folders: 지금 종류의 폴더들. fsel: "" �
 const canFolder = (kind) => KINDS[kind].folderCreate(me);
 const canDelFolder = (f) => KINDS[f.kind].folderDelete(me, f);
 const folderOf = (id) => folders.find((f) => f.id === id);
+const lockName = (f) => (f.visibility === "restricted" ? "🔒 " : "") + f.name;
+// 공개 범위 표시: 전체 공개 / 선택한 N명(목록은 볼 권한이 있는 사람에게만 오므로 없으면 인원은 생략)
+const shareLabel = (x) => (x.visibility === "restricted" ? `🔒 선택한 사람${x.viewers ? " " + x.viewers.length + "명" : ""}` : "공개 범위: 전체");
 const folderPath = (id) => {
   const f = folderOf(id), p = f && f.parent_id && folderOf(f.parent_id);
   return !f ? "" : p ? `${p.name} / ${f.name}` : f.name;
@@ -117,7 +120,7 @@ async function refreshList() {
 function card(m) {
   const c = catOf(m.category_id), k = KINDS[m.kind];
   const a = el("a", { href: "#" + m.id, className: "memo" },
-    el("strong", { textContent: m.title || "제목 없음" }),
+    el("strong", {}, ...(m.visibility === "restricted" ? [el("span", { className: "lock", title: "선택한 사람만 볼 수 있습니다", textContent: "🔒" })] : []), m.title || "제목 없음"),
     el("p", { className: "preview", textContent: m.body_text }),
     ...(folderPath(m.folder_id) ? [el("div", { className: "meta path", textContent: folderPath(m.folder_id) })] : []),
     el("div", { className: "meta" },
@@ -161,12 +164,12 @@ function paintFolders() {
   $("folders").replaceChildren(
     folderBtn("전체", fsel === "", () => pickFolder("")),
     folderBtn("폴더 없음", fsel === "none", () => pickFolder("none")),
-    ...folders.filter((f) => !f.parent_id).map((f) => folderBtn(f.name, f === root, () => pickFolder(f.id))),
+    ...folders.filter((f) => !f.parent_id).map((f) => folderBtn(lockName(f), f === root, () => pickFolder(f.id))),
     ...(make ? [folderBtn("+ 새 폴더", null, () => newFolder(null), "add")] : []));
   // 맨 위 폴더를 고르면 그 하위 폴더 줄. 하위 폴더 아래로는 만들 수 없어 하위 폴더를 고른 동안에는 + 새 폴더가 없다
   const subs = root ? folders.filter((f) => f.parent_id === root.id) : [];
   const subAdd = make && sel === root && sel;
-  $("subfolders").replaceChildren(...subs.map((f) => folderBtn(f.name, f === sel, () => pickFolder(f.id))),
+  $("subfolders").replaceChildren(...subs.map((f) => folderBtn(lockName(f), f === sel, () => pickFolder(f.id))),
     ...(subAdd ? [folderBtn("+ 새 폴더", null, () => newFolder(root.id), "add")] : []));
   $("subfolders").hidden = !subs.length && !subAdd;
   $("folder-tools").hidden = !sel;
@@ -174,6 +177,8 @@ function paintFolders() {
     $("folder-name").textContent = folderPath(sel.id);
     $("f-rename").hidden = !canFolder(sel.kind);
     $("f-delete").hidden = !canDelFolder(sel);
+    $("f-share").hidden = sel.kind !== "shared";
+    $("f-share").textContent = shareLabel(sel);
   }
   if (cur) paintFolderSelect();
 }
@@ -288,6 +293,8 @@ function paintMemo() {
     $("e-moves").dataset.to = to.join();
     $("e-moves").replaceChildren(...to.map((t) => el("button", { type: "button", className: "btn ghost", textContent: KINDS[t].moveLabel, onclick: () => move(t) })));
   }
+  $("e-share").hidden = m.kind !== "shared";
+  $("e-share").textContent = shareLabel(m);
   $("e-copy").hidden = !k.toPersonal(me);
   $("e-del").hidden = !k.del(me);
   $("e-meta").textContent = `작성 ${m.created_name || "알 수 없음"} · 마지막 수정 ${m.updated_name || "알 수 없음"} (${when(m.updated_at)})`;
@@ -321,8 +328,16 @@ function kindChanged() {
 const eventDate = (r) => { const s = String(r.start || ""); return s.slice(0, 10) + (r.all_day || s.length < 16 ? "" : " " + s.slice(11, 16)); };
 // 에디터 @ 힌트의 목록. 일정은 캘린더 연동이 켜졌을 때만, 메모는 이 메모 종류의 범위에서 자기 자신을 빼고
 async function linkSource(kind, q) {
-  const m = cur, url = MemoLink.base(linkBases()[kind]);
-  if (!m || !url || (kind === "event" && !conf.link)) return [];
+  const m = cur;
+  if (!m) return [];
+  if (kind === "user") { // 사람 태그: 한 번이라도 접속한 사람. 알림도 권한도 주지 않는 표시용 글(공개 범위는 따로 정한다)
+    const people = await api(`/api/members/pick?q=${encodeURIComponent(q)}&limit=8`);
+    if (!Array.isArray(people)) throw new Error("응답 형식");
+    return people.filter((r) => /^[A-Za-z0-9_-]{1,40}$/.test(r?.id) && typeof r.name === "string")
+      .map((r) => ({ title: r.name || "이름 없음", text: MemoLink.make(r.name || "이름 없음", "", r.id, "user") }));
+  }
+  const url = MemoLink.base(linkBases()[kind]);
+  if (!url || (kind === "event" && !conf.link)) return [];
   const qs = `q=${encodeURIComponent(q)}&limit=9`; // 9: 자기 자신을 빼도 8개
   const rows = await api(kind === "event" ? `/api/link/events?${qs}` : `/api/link/memos?${qs}&scope=${KINDS[m.kind].scope}`);
   if (!Array.isArray(rows)) throw new Error("응답 형식");
@@ -340,6 +355,7 @@ function paintChips(lookup = true) {
     if (typeof x !== "string" && !seen.has(x.kind + x.id)) { seen.add(x.kind + x.id); found.push(x); }
   $("e-links").hidden = !found.length;
   $("e-links").replaceChildren(...found.map((l) => {
+    if (l.kind === "user") return el("span", { className: "chip user" }, el("span", { className: "k", textContent: "사람" }), el("span", { className: "t", textContent: "@" + l.title }));
     const info = linkInfo.get(l.kind + l.id);
     // 같은 탭 이동: 일정은 캘린더 주소, 메모는 이 앱 안 #번호
     const a = el("a", { className: "chip", href: l.kind === "memo" ? "#" + l.id : l.url },
@@ -355,7 +371,7 @@ function paintChips(lookup = true) {
 // all: 이미 아는 것까지 다시 묻는다(20초 주기). 묻는 동안·실패하면 아는 값(처음이면 글의 제목)을 그대로 둔다
 async function lookupLinks(found, all) {
   const seq = chipSeq, m = cur, want = { event: [], memo: [] };
-  for (const l of found) if (all || !linkInfo.has(l.kind + l.id)) want[l.kind].push(l.id);
+  for (const l of found) if (l.kind !== "user" && (all || !linkInfo.has(l.kind + l.id))) want[l.kind].push(l.id);
   for (const [kind, ids] of Object.entries(want)) {
     if (seq !== chipSeq) return;
     if (!ids.length || (kind === "event" && !conf.link)) continue;
@@ -450,7 +466,7 @@ async function closeMemo() {
   $("e-body").replaceChildren(); $("e-preview").replaceChildren(); $("e-links").replaceChildren(); $("e-peers").textContent = ""; status("");
   // 닫은 메모의 흔적(제목·종류·폴더 이름)을 숨은 편집 화면에 남기지 않는다: 관리자에서 내려간 사람에게 전율 내용이 남지 않게
   $("e-title").value = $("e-kind").textContent = $("e-meta").textContent = "";
-  $("e-folder").replaceChildren(); $("e-moves").replaceChildren(); $("e-moves").dataset.to = "";
+  $("e-folder").replaceChildren(); $("e-moves").replaceChildren(); $("e-moves").dataset.to = ""; $("e-share").textContent = "";
 }
 
 function leave(text) {
@@ -491,6 +507,58 @@ $("e-del").onclick = async () => {
   try { await api(`/api/memos/${cur.id}`, { method: "DELETE" }); leave("삭제했습니다"); }
   catch (e) { deleting = false; toast(e.message); }
 };
+
+// --- 공개 범위(공동 메모·폴더): 전체 공개 또는 한 번이라도 접속한 사람 중 고른 사람만. 관리자는 항상 보인다 ---
+let sh = null; // {type: "memo"|"folder", item, ro, chosen: Map(id -> 이름)}
+let shTimer, shSeq = 0;
+const shMode = () => document.querySelector("input[name=sh-mode]:checked").value;
+function shPaint() {
+  $("sh-people").hidden = shMode() !== "restricted";
+  $("sh-count").textContent = sh.chosen.size;
+  $("sh-chosen").replaceChildren(...[...sh.chosen].map(([id, name]) => el("li", {}, el("span", { textContent: name }),
+    ...(sh.ro ? [] : [el("button", { type: "button", className: "btn ghost", textContent: "빼기", onclick: () => { sh.chosen.delete(id); shPaint(); shFind(); } })]))));
+}
+async function shFind() {
+  const n = ++shSeq, q = $("sh-q").value.trim();
+  let rows;
+  try { rows = await api(`/api/members/pick?q=${encodeURIComponent(q)}&limit=20`); } catch { rows = []; }
+  if (n !== shSeq || !sh) return;
+  rows = Array.isArray(rows) ? rows.filter((r) => typeof r?.id === "string" && typeof r.name === "string" && !sh.chosen.has(r.id)) : [];
+  $("sh-found").replaceChildren(...rows.map((r) => el("li", {}, el("span", { textContent: r.name }),
+    ...(sh.ro ? [] : [el("button", { type: "button", className: "btn ghost", textContent: "추가", onclick: () => { sh.chosen.set(r.id, r.name); shPaint(); shFind(); } })]))));
+}
+function shOpen(type, item) {
+  if (!item) return;
+  const ro = !item.can_share || item.inherited;
+  sh = { type, item, ro, chosen: new Map((item.viewers || []).map((v) => [v.id, v.name])) };
+  $("sh-title").textContent = `공개 범위 — ${type === "folder" ? "폴더" : "메모"} ${type === "folder" ? folderPath(item.id) : item.title || "제목 없음"}`;
+  $("sh-note").textContent = item.inherited ? "이 항목은 위쪽 폴더의 공개 범위를 따릅니다. 폴더에서 바꾸세요."
+    : !item.can_share ? "공개 범위는 만든 사람과 관리자만 바꿀 수 있습니다."
+    : type === "folder" ? "비공개로 하면 이 폴더와 하위 폴더, 안의 모든 메모에 적용됩니다." : "";
+  document.querySelector(`input[name=sh-mode][value=${item.visibility}]`).checked = true;
+  for (const r of document.querySelectorAll("input[name=sh-mode]")) r.disabled = ro;
+  $("sh-q").value = ""; $("sh-q").disabled = ro; $("sh-save").hidden = ro;
+  shPaint(); shFind(); $("share-dlg").showModal();
+}
+for (const r of document.querySelectorAll("input[name=sh-mode]")) r.onchange = () => { shPaint(); shFind(); };
+$("sh-q").oninput = () => { clearTimeout(shTimer); shTimer = setTimeout(shFind, 250); };
+$("sh-cancel").onclick = () => $("share-dlg").close();
+$("share-dlg").onclose = () => { sh = null; shSeq++; };
+$("sh-save").onclick = async () => {
+  const s = sh, mode = shMode();
+  if (mode === "all" && s.item.visibility === "restricted" && !confirm("모든 사람에게 보이게 됩니다. 전체 공개로 바꿀까요?")) return;
+  if (mode === "restricted" && !s.chosen.size && !confirm("고른 사람이 없으면 만든 사람과 관리자만 볼 수 있습니다. 계속할까요?")) return;
+  try {
+    const path = `/api/${s.type === "memo" ? "memos" : "folders"}/${s.item.id}`;
+    await api(path + "/share-with", { method: "PUT", body: JSON.stringify({ visibility: mode, viewers: mode === "restricted" ? [...s.chosen.keys()] : [] }) });
+    $("share-dlg").close();
+    toast("공개 범위를 저장했습니다");
+    if (s.type === "memo") { const m = await api(path); if (cur && cur.id === m.id) { cur = m; paintMemo(); } }
+    else { fsel = typeof fsel === "number" ? fsel : ""; await refreshFolders(); refreshList(); }
+  } catch (e) { toast(e.message); }
+};
+$("e-share").onclick = () => shOpen("memo", cur);
+$("f-share").onclick = () => shOpen("folder", folderOf(fsel));
 
 // --- 화면 전환 ---
 // 한 번에 하나씩 순서대로 처리한다: 제목 저장(네트워크)을 기다리는 사이 다음 전환이 끼어들면

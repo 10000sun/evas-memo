@@ -92,3 +92,11 @@ def test_admin_space_ui_rules(client):
               "나만 볼 수 있게 됩니다(다른 관리자에게도 사라집니다)", "관리자 권한이 없어 닫혔습니다"):
         assert s in a, s
     assert "/move`" in a and "code === 4403" in a
+
+
+def test_index_has_share_ui(client):
+    html = client.get("/").text
+    for el in ('id="share-dlg"', 'id="e-share"', 'id="f-share"', 'id="sh-save"', 'name="sh-mode"'):
+        assert el in html, el
+    js = client.get("/app.js").text
+    assert "/share-with" in js and "/api/members/pick" in js and "user:" in js or "kind === \"user\"" in js
