@@ -3,6 +3,8 @@
 방은 DB의 memos.ydoc에서 복원하고, 바뀌면 SAVE_DELAY초 안에, 마지막 접속자가 나갈 때, 서버가 꺼질 때 저장한다.
 """
 import asyncio
+import logging
+import sqlite3
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, WebSocket
@@ -15,6 +17,7 @@ MAX_CHARS = 100_000
 MAX_BYTES = 5_000_000  # 들어오는 업데이트와 문서 전체(Yjs 상태) 바이트 상한. text 밖 루트 타입으로 키우는 것도 막는다
 SAVE_DELAY = 2  # 초. 편집이 계속돼도 첫 변경 뒤 이만큼 지나면 저장한다(재시작 손실을 줄이려고 미루기만 하지 않는다)
 _EDITS = (YSyncMessageType.SYNC_STEP2, YSyncMessageType.SYNC_UPDATE)  # 문서를 바꾸는 동기화 메시지
+log = logging.getLogger(__name__)
 
 
 def body(doc: Doc) -> str:
@@ -59,31 +62,48 @@ class _Room(YRoom):
         super().__init__(ydoc=doc)
         # editor: 지금 편집 메시지를 보낸 사람, changed_by: 실제로 문서를 바꾼 마지막 사람(저장에 쓴다)
         self.memo_id, self.editor, self.changed_by, self._timer = memo_id, None, None, None
+        self.dropped = False  # 메모가 지워짐: 이후 어떤 저장도 하지 않는다(같은 id를 다시 쓴 새 메모를 덮지 않게)
         self._sub = doc.observe(self._changed)
 
+    def _arm(self):
+        self._timer = asyncio.get_running_loop().call_later(SAVE_DELAY, self.save)
+
     def _changed(self, _event):
+        if self.dropped:
+            return
         self.changed_by = self.editor
         if self._timer is None:
-            self._timer = asyncio.get_running_loop().call_later(SAVE_DELAY, self.save)
+            self._arm()
 
-    def save(self):
-        """바뀐 게 있으면 지금 저장한다. 동기 함수라 저장 도중에 다른 접속이 끼어들지 않는다."""
-        if self._timer is None:
-            return
+    def save(self) -> bool:
+        """바뀐 게 있으면 지금 저장한다. 동기 함수라 저장 도중에 다른 접속이 끼어들지 않는다.
+
+        DB 쓰기가 실패하면(예: database is locked) 바뀐 상태를 그대로 두고 SAVE_DELAY 뒤 다시 시도하며 False를 돌려준다.
+        """
+        if self._timer is None or self.dropped:
+            return True
+        u = self.changed_by or {}
+        try:
+            with db.connect() as con:
+                con.execute("UPDATE memos SET ydoc=?, body_text=?, updated_by=COALESCE(?, updated_by), "
+                            "updated_name=COALESCE(?, updated_name), updated_at=? WHERE id=?",
+                            (self.ydoc.get_update(), body(self.ydoc), u.get("id"), u.get("name"), db.now(),
+                             self.memo_id))
+                m = con.execute("SELECT kind, title FROM memos WHERE id=?", (self.memo_id,)).fetchone()
+                if m and m["kind"] == "shared" and u.get("id"):  # 개인 메모는 기록하지 않는다
+                    activity.log(con, "edit", self.memo_id, m["title"], u)
+        except sqlite3.Error:
+            log.exception("메모 %s 저장 실패: %s초 뒤 다시 시도", self.memo_id, SAVE_DELAY)
+            self._timer.cancel()
+            self._arm()
+            return False
         self._timer.cancel()
         self._timer = None
-        u = self.changed_by or {}
-        with db.connect() as con:
-            con.execute("UPDATE memos SET ydoc=?, body_text=?, updated_by=COALESCE(?, updated_by), "
-                        "updated_name=COALESCE(?, updated_name), updated_at=? WHERE id=?",
-                        (self.ydoc.get_update(), body(self.ydoc), u.get("id"), u.get("name"), db.now(),
-                         self.memo_id))
-            m = con.execute("SELECT kind, title FROM memos WHERE id=?", (self.memo_id,)).fetchone()
-            if m and m["kind"] == "shared" and u.get("id"):  # 개인 메모는 기록하지 않는다
-                activity.log(con, "edit", self.memo_id, m["title"], u)
+        return True
 
     def discard(self):
-        """저장하지 않는다(메모가 지워짐)."""
+        """저장하지 않는다(메모가 지워짐). 이후 편집이 들어와도 타이머를 다시 걸지 않는다."""
+        self.dropped = True
         if self._timer:
             self._timer.cancel()
         self._timer = None
@@ -106,7 +126,8 @@ class _Server(WebsocketServer):
         if room not in self.rooms.values():
             return  # 메모 삭제로 이미 내린 방(Rooms.drop)
         # 마지막 접속자가 나감: 방을 내리기 전에 저장해야 곧바로 들어온 사람이 옛 DB를 읽지 않는다
-        room.save()
+        if not room.save():
+            return  # 저장 실패: 방(편집 내용)을 메모리에 남겨 두고 타이머로 다시 시도한다
         await super().delete_room(room=room)
 
 
@@ -128,19 +149,15 @@ class Rooms:
         room = self.server.rooms.pop(str(memo_id), None)
         if room is None:
             return
-        room.discard()
+        room.discard()  # 지금부터 저장 금지(이미 걸린 타이머 포함)
         for ch in list(room.clients):
             await ch.close(code, reason)
         await room.stop()
+        room.discard()  # 닫는 동안 들어온 편집이 건 타이머까지 한 번 더 정리
 
 
 rooms = Rooms()
 router = APIRouter()
-
-
-async def get_doc(memo_id) -> Doc:
-    """DB의 ydoc로 복원한 방의 문서(이미 열려 있으면 그 방)."""
-    return (await rooms.server.get_room(str(memo_id))).ydoc
 
 
 @asynccontextmanager
@@ -152,7 +169,8 @@ async def lifespan(_app):
             yield
         finally:
             for name in list(rooms.server.rooms):  # 꺼지기 전에 모두 저장하고 내린다
-                await rooms.server.delete_room(name=name)
+                if name in rooms.server.rooms:  # 기다리는 사이 연결이 끝나 스스로 정리된 방은 건너뛴다
+                    await rooms.server.delete_room(name=name)
 
 
 class _Channel:
@@ -192,6 +210,9 @@ class _Channel:
         while True:
             msg = await self._ws.receive()
             if msg["type"] == "websocket.disconnect" or self.closed:
+                raise StopAsyncIteration
+            if rooms.get(self._path) is not self.room:  # 붙은 방이 이미 내려감(삭제·재생성): 다시 연결하게 한다
+                await self.close(1012, "다시 연결해 주세요")
                 raise StopAsyncIteration
             data = msg.get("bytes")
             if not data:  # 텍스트 프레임 등 Yjs가 아닌 메시지

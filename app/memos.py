@@ -4,7 +4,7 @@ from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pycrdt import Doc
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from . import activity, db, push, ws
 from .auth import current_user, editor
@@ -13,15 +13,20 @@ router = APIRouter(prefix="/api/memos")
 FIELDS = "id, kind, owner_id, title, category_id, body_text, created_name, updated_name, updated_at"
 
 
-class MemoIn(BaseModel):
-    kind: Literal["personal", "shared"]
-    title: str = ""
-    category_id: int | None = None
-
-
 class MemoEdit(BaseModel):
     title: str = ""
     category_id: int | None = None
+
+    @field_validator("title")
+    @classmethod
+    def _title(cls, v):
+        if len(v) > 100:  # 화면 입력칸(maxlength=100)과 같다
+            raise ValueError("제목은 100자까지입니다")
+        return v
+
+
+class MemoIn(MemoEdit):
+    kind: Literal["personal", "shared"]
 
 
 def _get(con, mid, user):
@@ -128,10 +133,11 @@ def share_memo(mid: int, bg: BackgroundTasks, user=Depends(editor)):
 
 
 @router.post("/{mid}/copy-to-personal", status_code=201)
-async def copy_to_personal(mid: int, user=Depends(current_user)):
+async def copy_to_personal(mid: int, user=Depends(editor)):
     """공동 -> 개인 '복사': 호출자 소유의 새 메모. ydoc 바이트를 복사하므로 이후 둘은 서로 무관하다.
 
     async: 열린 방의 저장(타이머·Yjs 문서)은 이벤트 루프에서만 만진다.
+    편집자 이상만: 보기 전용은 새 메모를 만들 수 없으므로 복사로도 못 만든다.
     """
     with db.connect() as con:
         if _get(con, mid, user)["kind"] != "shared":
