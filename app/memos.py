@@ -1,4 +1,7 @@
-"""메모 API. 개인 메모는 소유자만(관리자 포함 누구에게도 안 보임), 공동 메모는 로그인한 누구나 보고 편집자 이상이 고친다."""
+"""메모 API. 개인 메모는 소유자만(관리자 포함 누구에게도 안 보임), 공동 메모는 로그인한 누구나 보고 편집자 이상이 고친다.
+
+전율(admin) 메모는 관리자 역할 전원만 보고 고친다. 비관리자에게는 없는 메모와 똑같이 404다(판정은 ws.can_access 하나).
+"""
 import sqlite3
 from typing import Literal
 
@@ -26,8 +29,25 @@ class MemoEdit(BaseModel):
         return v
 
 
+Kind = Literal["personal", "shared", "admin"]
+
+
 class MemoIn(MemoEdit):
-    kind: Literal["personal", "shared"]
+    kind: Kind
+
+
+class MoveIn(BaseModel):
+    to: Kind
+
+
+# 이동 API가 맡는 전이. 개인 -> 공동은 /share, 공동 -> 개인은 /copy-to-personal(복사)이 그대로 맡는다
+MOVES = {("personal", "admin"), ("shared", "admin"), ("admin", "shared"), ("admin", "personal")}
+
+
+def need_kind(kind, user):
+    """이 종류를 못 쓰는 사람(비관리자의 admin)에게는 종류 자체를 드러내지 않는다: 없는 경로와 같은 404."""
+    if not ws.can_use_kind(kind, user):
+        raise HTTPException(404)
 
 
 def _get(con, mid, user):
@@ -60,8 +80,9 @@ def _insert(con, user, kind, title, category_id, body_text="", ydoc=None, folder
 
 
 @router.get("")
-def list_memos(kind: Literal["personal", "shared"], category_id: int | None = None, folder_id: str | None = None,
+def list_memos(kind: Kind, category_id: int | None = None, folder_id: str | None = None,
                q: str = "", user=Depends(current_user)):
+    need_kind(kind, user)
     sql, args = f"SELECT {FIELDS} FROM memos WHERE kind=?", [kind]
     if kind == "personal":
         sql += " AND owner_id=?"
@@ -85,10 +106,11 @@ def list_memos(kind: Literal["personal", "shared"], category_id: int | None = No
 
 @router.post("", status_code=201)
 def add_memo(m: MemoIn, bg: BackgroundTasks, user=Depends(editor)):
+    need_kind(m.kind, user)
     with db.connect() as con:
         _check_folder(con, m.folder_id, m.kind, user)
         mid = _insert(con, user, m.kind, m.title, m.category_id, folder_id=m.folder_id)
-        if m.kind == "shared":  # 개인 메모는 기록·푸시가 없다
+        if m.kind == "shared":  # 개인·전율 메모는 기록·푸시가 없다
             activity.log(con, "add", mid, m.title, user)
             bg.add_task(push.notify, "add", m.title, user)
         return _out(con, mid)
@@ -142,7 +164,7 @@ def share_memo(mid: int, bg: BackgroundTasks, user=Depends(editor)):
     with db.connect() as con:
         m = _get(con, mid, user)
         if m["kind"] != "personal":
-            raise HTTPException(409, "이미 공동 메모입니다")
+            raise HTTPException(409, "개인 메모만 공동으로 옮길 수 있습니다")
         con.execute("UPDATE memos SET kind='shared', folder_id=NULL WHERE id=?", (mid,))
         activity.log(con, "add", mid, m["title"], user)
         bg.add_task(push.notify, "add", m["title"], user)
@@ -165,3 +187,35 @@ async def copy_to_personal(mid: int, user=Depends(editor)):
     with db.connect() as con:
         m = con.execute("SELECT * FROM memos WHERE id=?", (mid,)).fetchone()
         return _out(con, _insert(con, user, "personal", m["title"], m["category_id"], m["body_text"], m["ydoc"]))
+
+
+@router.post("/{mid}/move")
+async def move_memo(mid: int, mv: MoveIn, bg: BackgroundTasks, user=Depends(current_user)):
+    """개인·공동 <-> 전율 '이동': 같은 행·같은 Yjs 문서. 종류(전율 -> 개인이면 소유자도)만 바뀌고 폴더는 비운다.
+
+    허용되는 전이는 모두 전율이 끼므로 관리자만 할 수 있다(전율에서: _get이, 전율로: need_kind가 막는다).
+    async: 열린 방 저장(이동 전 편집 포함) -> 종류 변경 -> 권한을 잃은 접속자 종료를 이벤트 루프에서 이어서 한다.
+    """
+    with db.connect() as con:
+        m = _get(con, mid, user)
+    need_kind(mv.to, user)
+    if (m["kind"], mv.to) not in MOVES:
+        raise HTTPException(422, "이 메모는 그 종류로 옮길 수 없습니다")
+    room = ws.rooms.get(mid)
+    if room and not room.save():  # 저장 안 된 편집은 옛 종류일 때의 것이다(공동이었다면 기록도 공동으로 남는다)
+        raise HTTPException(503, "저장하지 못했습니다. 잠시 후 다시 시도해 주세요")
+    owner = user["id"] if mv.to == "personal" else m["owner_id"]
+    with db.connect() as con:
+        # 확인한 뒤 다른 요청(스레드)이 먼저 종류를 바꿨으면 옮기지 않는다
+        if not con.execute("UPDATE memos SET kind=?, owner_id=?, folder_id=NULL WHERE id=? AND kind=?",
+                           (mv.to, owner, mid, m["kind"])).rowcount:
+            raise HTTPException(409, "메모가 바뀌었습니다. 다시 열어 주세요")
+        out = _out(con, mid)
+        if m["kind"] == "shared":  # 공동에서 사라짐: 삭제처럼 기록하되 푸시는 보내지 않는다
+            activity.log(con, "delete", mid, out["title"], user)
+        if mv.to == "shared":  # 모두에게 새로 보임: 개인 -> 공동 이동(/share)과 같다
+            activity.log(con, "add", mid, out["title"], user)
+            bg.add_task(push.notify, "add", out["title"], user)
+    # 커밋 뒤 await 없이 이어서: 계속 볼 수 있는 접속자는 두고 나머지만 닫는다
+    await ws.rooms.revoke(4404, "메모가 옮겨졌습니다", memo_id=mid)
+    return out

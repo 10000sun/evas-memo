@@ -27,11 +27,16 @@ def user_of(session, x_user_id: str | None = None):
         uid, name = x_user_id, x_user_id
     if not uid:
         return None
+    return {"id": uid, "name": name, "role": role_of(uid)}
+
+
+def role_of(uid):
+    """지금 DB 기준 역할. 열린 실시간 연결의 권한을 다시 확인할 때도 쓴다."""
     with db.connect() as con:
         row = con.execute("SELECT role FROM users WHERE id=?", (uid,)).fetchone()
     # 팀 방침에 따라 EVAS_OPEN_EDIT=1이면 로그인한 누구나 편집자. 분류·권한 관리는 계속 관리자만
     default = "editor" if os.environ.get("EVAS_OPEN_EDIT") == "1" else "viewer"
-    return {"id": uid, "name": name, "role": row["role"] if row else default}
+    return row["role"] if row else default
 
 
 def current_user(request: Request, x_user_id: str | None = Header(default=None)):

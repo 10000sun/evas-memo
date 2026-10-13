@@ -114,18 +114,23 @@ def list_users(_=Depends(admin)):
         return rows(con, "SELECT * FROM users ORDER BY role, name")
 
 
+# async: 역할이 바뀐 뒤 그 사람의 열린 전율 메모 연결을 같은 이벤트 루프에서 닫는다
+LOST_ADMIN = (4403, "관리자 권한이 없어졌습니다")
+
+
 @app.put("/api/users/{uid}")
-def set_user(uid: str, u: UserIn, me=Depends(admin)):
+async def set_user(uid: str, u: UserIn, me=Depends(admin)):
     with db.connect() as con:
         if uid == me["id"] and u.role != "admin" and _admin_count(con) == 1:
             raise HTTPException(409, "마지막 관리자는 강등할 수 없습니다")
         con.execute("INSERT INTO users(id,name,role) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET name=?, role=?",
                     (uid, u.name, u.role, u.name, u.role))
+    await ws.rooms.revoke(*LOST_ADMIN, user_id=uid)  # 강등: 접근을 잃은 연결(전율 방)만 닫힌다
     return {"id": uid, **u.model_dump()}
 
 
 @app.delete("/api/users/{uid}", status_code=204)
-def del_user(uid: str, _=Depends(admin)):
+async def del_user(uid: str, _=Depends(admin)):
     with db.connect() as con:
         row = con.execute("SELECT role FROM users WHERE id=?", (uid,)).fetchone()
         if not row:
@@ -133,6 +138,7 @@ def del_user(uid: str, _=Depends(admin)):
         if row["role"] == "admin" and _admin_count(con) == 1:
             raise HTTPException(409, "마지막 관리자는 지울 수 없습니다")
         con.execute("DELETE FROM users WHERE id=?", (uid,))
+    await ws.rooms.revoke(*LOST_ADMIN, user_id=uid)
 
 
 def _admin_count(con):
