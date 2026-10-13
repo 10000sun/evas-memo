@@ -2,6 +2,7 @@ import os
 import re
 import secrets
 import sqlite3
+from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException
@@ -22,7 +23,6 @@ app.add_middleware(SessionMiddleware, secret_key=os.environ.get("SESSION_SECRET"
 app.include_router(auth.router)
 app.include_router(memos.router)
 app.include_router(ws.router)
-app.mount("/static", StaticFiles(directory="static"), name="static")
 db.init()
 
 COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -194,3 +194,7 @@ def push_subscribe(s: SubIn, user=Depends(current_user)):
 def push_unsubscribe(s: SubIn, user=Depends(current_user)):
     with db.connect() as con:
         con.execute("DELETE FROM push_subs WHERE endpoint=? AND user_id=?", (s.endpoint, user["id"]))
+
+
+# 화면 파일은 사이트 루트에서 낸다(캘린더와 같다). 모든 API·WebSocket 라우트보다 뒤에 둬야 그것들을 가리지 않는다
+app.mount("/", StaticFiles(directory=Path(__file__).parent.parent / "static", html=True))
