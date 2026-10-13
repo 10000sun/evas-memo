@@ -100,3 +100,8 @@ def test_index_has_share_ui(client):
         assert el in html, el
     js = client.get("/app.js").text
     assert "/share-with" in js and "/api/members/pick" in js and "user:" in js or "kind === \"user\"" in js
+
+
+def test_empty_new_memo_is_dropped_on_leave(client):
+    js = client.get("/app.js").text
+    assert "fresh.add(m.id)" in js and "isBlank()" in js and 'method: "DELETE"' in js
