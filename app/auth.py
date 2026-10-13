@@ -122,6 +122,16 @@ def callback(request: Request, code: str = "", state: str = ""):
     return RedirectResponse("/")
 
 
+@router.get("/auth/dev")
+def dev_login(request: Request, uid: str, name: str = ""):
+    """개발용 로그인(EVAS_DEV_AUTH=1일 때만). 브라우저 WebSocket은 X-User-Id 헤더를 못 붙여 세션이 필요하다."""
+    if os.environ.get("EVAS_DEV_AUTH") != "1":
+        raise HTTPException(404)
+    request.session.clear()
+    request.session.update(uid=uid, name=name or uid)
+    return RedirectResponse("/")
+
+
 @router.post("/auth/logout", status_code=204)
 def logout(request: Request):
     request.session.clear()

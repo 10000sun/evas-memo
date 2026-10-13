@@ -108,3 +108,14 @@ def test_서버가_지정된_경우_디스코드_멤버_조회가_404면_구성�
     assert auth.fetch_discord_profile("c", "u", "G1") == {"id": "9", "name": "서버닉", "in_guild": True}
     assert auth.fetch_discord_profile("c", "u", "OTHER")["in_guild"] is False
     assert auth.fetch_discord_profile("c", "u", "")["name"] == "글로벌"
+
+
+def test_개발용_로그인은_EVAS_DEV_AUTH일_때만(client, monkeypatch):
+    # 브라우저 WebSocket은 X-User-Id 헤더를 못 붙여서 개발 중엔 세션으로 로그인한다
+    client.follow_redirects = False
+    assert client.get("/auth/dev?uid=a&name=에이").status_code in (302, 307)
+    assert client.get("/api/me").json()["name"] == "에이"
+    client.cookies.clear()
+    monkeypatch.delenv("EVAS_DEV_AUTH")
+    assert client.get("/auth/dev?uid=a").status_code == 404
+    assert client.get("/api/me").status_code == 401

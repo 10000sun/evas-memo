@@ -4,7 +4,8 @@ import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
 import { yCollab } from "y-codemirror.next";
 
-// window.EvasEditor.create({parent, memoId, user:{name,color}}) -> {destroy(), view}
+// window.EvasEditor.create({parent, memoId, user:{name,color}}) -> {destroy(), view, awareness, provider}
+// provider: 화면이 연결 상태('status')·닫힘 코드('connection-close')·문서(provider.doc)를 본다
 function create({ parent, memoId, user }) {
   const doc = new Y.Doc();
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -22,6 +23,7 @@ function create({ parent, memoId, user }) {
   return {
     view,
     awareness: provider.awareness,
+    provider,
     destroy() {
       view.destroy();
       provider.destroy();

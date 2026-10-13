@@ -1,0 +1,17 @@
+.item { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 8px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.item:last-child { border-bottom: 0; }
+form.item { flex-direction: row; border-bottom: 0; padding-top: 4px; }
+.item > .grow { flex: 1 1 140px; min-width: 0; }
+.item > .cedit { order: 5; flex: 1 1 100%; }
+/* 좁은 화면에서도 선택기·HEX·R·G·B가 한 줄에 들어가도록 HEX 칸만 늘어나고 줄어든다 */
+.crow { display: grid; grid-template-columns: 40px minmax(0, 1fr) repeat(3, 52px); align-items: center; gap: 6px; max-width: 420px; }
+.pick { width: 40px; height: 38px; padding: 3px; border-radius: 10px; cursor: pointer; }
+.hex { min-width: 0; font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: .9rem; }
+.rgb { width: 52px; padding: 8px 4px; text-align: center; -moz-appearance: textfield; }
+.rgb::-webkit-outer-spin-button, .rgb::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+input.bad { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, var(--surface)); }
+.swatches { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.sw { width: 24px; height: 24px; padding: 0; border-radius: 50%; border: 2px solid var(--surface); box-shadow: 0 0 0 1px var(--line); cursor: pointer; }
+.sw:hover { transform: scale(1.12); }
+#cn-color { flex: 1 1 100%; order: 5; }
+form.item #cn-color .cedit { width: 100%; }

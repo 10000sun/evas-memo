@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>에바스 메모 관리</title>
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="icon" href="icons/icon-192.png" sizes="192x192" type="image/png">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="theme-color" content="#3b5bdb">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="에바스 메모">
+<script>try{var t=localStorage.getItem("theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="admin.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><img src="icons/icon-192.png" alt="" width="30" height="30"><h1>메모 설정</h1></div>
+  <div class="actions"><button id="theme" class="btn ghost icon" type="button"></button><a class="btn ghost" href="./">← 메모</a></div>
+</header>
+<div id="msg" class="notice" hidden></div>
+
+<main id="main" class="narrow" hidden>
+  <section class="card">
+    <h2>분류</h2>
+    <p class="hint">색은 모든 사용자에게 똑같이 보입니다. 이름과 색은 관리자만 바꿉니다. 분류를 지우면 그 분류의 메모는 ‘미분류’가 됩니다(메모는 지워지지 않음). 색은 견본을 누르거나 HEX(<code>#3b5bdb</code>), RGB(<code>59, 91, 219</code>)로 직접 입력하세요.</p>
+    <div id="cats"></div>
+    <h3>새 분류</h3>
+    <form id="cat-new" class="item" autocomplete="off">
+      <input id="cn-name" class="grow" placeholder="새 분류 이름" required maxlength="30">
+      <span id="cn-color"></span>
+      <button class="btn primary">추가</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>사용자 권한</h2>
+    <p class="hint">관리자는 분류와 사용자 권한을 관리합니다. 사용자 ID는 디스코드 ID입니다.</p>
+    <div id="users"></div>
+    <h3>사용자 추가</h3>
+    <form id="user-new" class="item" autocomplete="off">
+      <input id="un-id" class="grow" placeholder="사용자 ID(디스코드)" required>
+      <input id="un-name" class="grow" placeholder="이름" required maxlength="30">
+      <select id="un-role"><option value="editor">편집자</option><option value="admin">관리자</option></select>
+      <button class="btn primary">추가</button>
+    </form>
+  </section>
+</main>
+
+<script src="common.js"></script>
+<script src="color.js"></script>
+<script src="admin.js"></script>
+</body>
+</html>
