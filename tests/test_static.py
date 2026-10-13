@@ -1,4 +1,9 @@
 """화면 파일이 사이트 루트에서 나오는지(캘린더처럼 / 에 정적 파일). 화면 동작 자체는 브라우저로 수동 확인한다."""
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
 
 
 def test_index_served(client):
@@ -45,3 +50,28 @@ def test_index_has_folder_ui(client):
     for i in ("folders", "subfolders", "folder-tools", "f-rename", "f-delete", "e-folder"):
         assert f'id="{i}"' in t, i
     assert t.index('id="folders"') < t.index('id="memos"')  # 폴더 줄은 목록 위
+
+
+def test_index_has_link_ui(client):
+    t = client.get("/").text
+    assert '<nav class="apps" aria-label="앱 전환">' in t and 'id="to-cal"' in t and 'aria-current="page"' in t
+    assert 'id="e-links"' in t and t.index('id="e-links"') < t.index('id="e-body"')  # 연결 칩 줄은 본문 위
+    assert t.index('src="memolink.js"') < t.index('src="app.js"')
+    assert client.get("/memolink.js").status_code == 200
+
+
+def test_link_hints_above_cursor_and_text_only(client):
+    bundle = client.get("/vendor/editor.bundle.js").text
+    fail = "".join(f"\\u{ord(c):04X}" if ord(c) > 127 else c for c in "연결할 수 없습니다")
+    assert "aboveCursor:!0" in bundle and fail in bundle  # 힌트는 커서 위쪽, 실패는 한 줄 안내(esbuild가 한글을 \uXXXX로 쓴다)
+    app_js = client.get("/app.js").text
+    # 화면에서 HTML로 넣는 곳은 무해화한 미리보기 하나뿐(제목·칩·힌트는 textContent)
+    assert app_js.count("innerHTML") == 1 and "EvasMarkdown.render" in app_js
+    assert "/auth/login?next=" in client.get("/common.js").text  # 로그인 뒤 딥링크로 돌아온다
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node가 없으면 파서 단위 테스트는 건너뛴다")
+def test_memolink_node_unit_tests():
+    r = subprocess.run(["node", "--test", str(Path(__file__).parent / "memolink.test.js")],
+                       capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert r.returncode == 0, r.stdout + r.stderr

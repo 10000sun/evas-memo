@@ -3,10 +3,16 @@ let cats = [], me = null, memos = [], shown = new Set(); // shown: 범례에서 
 let tab = "shared", cur = null, ed = null, openReq = 0, titleTimer = null, deleting = false, focusTitle = false;
 try { tab = localStorage.getItem("tab") || tab; } catch { /* 저장이 막혀 있으면 공동 탭부터 */ }
 // 메모 종류별 화면 규칙. 종류가 늘면 여기에 한 줄 더한다(scope: 그 종류 본문의 @ 힌트가 부르는 /api/link/memos 범위)
+// lookup: 그 종류 본문의 연결 칩이 메모 최신 제목을 물을 때의 범위(내 개인 메모 링크는 어디 있든 내게는 제목이 보인다)
 const KINDS = {
-  personal: { name: "개인 메모", empty: "개인 메모가 없습니다. + 메모로 새로 만드세요.", scope: "all" },
-  shared: { name: "공동 메모", empty: "공동 메모가 없습니다.", scope: "shared" },
+  personal: { name: "개인 메모", empty: "개인 메모가 없습니다. + 메모로 새로 만드세요.", scope: "all", lookup: "all" },
+  shared: { name: "공동 메모", empty: "공동 메모가 없습니다.", scope: "shared", lookup: "all" },
 };
+let conf = {}; // /api/config: 앱 주소들(memo_url·calendar_url)과 캘린더 연동 켜짐(link)
+const linkBases = () => ({ event: conf.calendar_url, memo: conf.memo_url }); // MemoLink 종류별 앱 주소
+// 딥링크 /?memo=<id> -> #<id>(편집 화면). 새로고침해도 다시 뛰지 않게 쿼리는 지운다
+const deep = new URLSearchParams(location.search).get("memo");
+if (deep !== null) history.replaceState(null, "", location.pathname + (/^\d+$/.test(deep) ? "#" + deep : ""));
 if (!KINDS[tab]) tab = "shared";
 const saveTab = () => { try { localStorage.setItem("tab", tab); } catch { /* 이번 화면에서만 기억 */ } };
 // 탭(종류)이 바뀌면 폴더 선택은 처음(전체)부터
@@ -219,8 +225,69 @@ function fillForm() {
 async function refreshCur() {
   const id = cur.id;
   refreshFolders();
+  paintChips("all"); // 칩의 제목·삭제 여부도 다시 묻는다
   try { const m = await api(`/api/memos/${id}`); if (cur && cur.id === id) { cur = m; fillForm(); } }
   catch { /* 지워졌으면 실시간 연결이 알려준다 */ }
+}
+
+// --- 일정·메모 연결 ---
+// 일정 날짜: 캘린더의 ISO 문자열 그대로(종일이면 날짜만)
+const eventDate = (r) => { const s = String(r.start || ""); return s.slice(0, 10) + (r.all_day || s.length < 16 ? "" : " " + s.slice(11, 16)); };
+// 에디터 @ 힌트의 목록. 일정은 캘린더 연동이 켜졌을 때만, 메모는 이 메모 종류의 범위에서 자기 자신을 빼고
+async function linkSource(kind, q) {
+  const m = cur, url = MemoLink.base(linkBases()[kind]);
+  if (!m || !url || (kind === "event" && !conf.link)) return [];
+  const qs = `q=${encodeURIComponent(q)}&limit=9`; // 9: 자기 자신을 빼도 8개
+  const rows = await api(kind === "event" ? `/api/link/events?${qs}` : `/api/link/memos?${qs}&scope=${KINDS[m.kind].scope}`);
+  if (!Array.isArray(rows)) throw new Error("응답 형식");
+  return rows.filter((r) => /^\d+$/.test(r?.id) && typeof r.title === "string" && !(kind === "memo" && r.id === m.id)).slice(0, 8)
+    .map((r) => ({ title: r.title || "제목 없음", detail: kind === "event" ? eventDate(r) : undefined,
+      text: MemoLink.make(r.title || "제목 없음", url, r.id, kind) }));
+}
+// 연결 칩 줄: 본문의 [@제목](일정·메모 주소) 링크를 중복 없이 모아 본문 위에 보인다. 제목은 글의 링크 텍스트를 먼저 쓰고
+// 서버 배치 조회(ids=)로 최신 제목·날짜·삭제 여부를 받아 고친다. linkInfo: "종류id" -> 행 | null(삭제됨) | undefined(조회 실패)
+const linkInfo = new Map();
+let chipTimer, chipSeq = 0;
+function paintChips(lookup = true) {
+  const seen = new Set(), found = [];
+  for (const x of MemoLink.parse(ed ? ed.view.state.doc.toString() : "", linkBases()))
+    if (typeof x !== "string" && !seen.has(x.kind + x.id)) { seen.add(x.kind + x.id); found.push(x); }
+  $("e-links").hidden = !found.length;
+  $("e-links").replaceChildren(...found.map((l) => {
+    const info = linkInfo.get(l.kind + l.id);
+    // 같은 탭 이동: 일정은 캘린더 주소, 메모는 이 앱 안 #번호
+    const a = el("a", { className: "chip", href: l.kind === "memo" ? "#" + l.id : l.url },
+      el("span", { className: "k", textContent: l.kind === "event" ? "일정" : "메모" }),
+      el("span", { className: "t", textContent: "@" + (info ? info.title || "제목 없음" : l.title) }));
+    a.dataset.kind = l.kind;
+    if (info && l.kind === "event") a.append(el("span", { className: "d", textContent: eventDate(info) }));
+    if (info === null) { a.classList.add("gone"); a.append(el("span", { className: "d", textContent: "삭제됨" })); }
+    return a;
+  }));
+  if (lookup) lookupLinks(found, lookup === "all");
+}
+// all: 이미 아는 것까지 다시 묻는다(20초 주기). 묻는 동안·실패하면 아는 값(처음이면 글의 제목)을 그대로 둔다
+async function lookupLinks(found, all) {
+  const seq = chipSeq, m = cur, want = { event: [], memo: [] };
+  for (const l of found) if (all || !linkInfo.has(l.kind + l.id)) want[l.kind].push(l.id);
+  for (const [kind, ids] of Object.entries(want)) {
+    if (seq !== chipSeq) return;
+    if (!ids.length || (kind === "event" && !conf.link)) continue;
+    for (const id of ids) if (!linkInfo.has(kind + id)) linkInfo.set(kind + id, undefined); // 묻는 중: 같은 것을 또 묻지 않게
+    const got = [];
+    try {
+      for (let i = 0; i < ids.length; i += 50) { // 메모 서버의 ids 상한(50)에 맞춰 나눠 묻는다
+        const part = ids.slice(i, i + 50).join(",");
+        const rows = await api(kind === "event" ? `/api/link/events?ids=${part}` : `/api/link/memos?scope=${KINDS[m.kind].lookup}&ids=${part}`);
+        if (!Array.isArray(rows)) throw new Error("응답 형식");
+        got.push(...rows);
+      }
+    } catch { continue; } // 실패는 조용히 무시, 다음 주기에 다시
+    if (seq !== chipSeq) return; // 그 사이 다른 메모로 갔다(위 반복 처음에도 확인)
+    const byId = new Map(got.filter((r) => typeof r?.title === "string").map((r) => [String(r.id), r]));
+    for (const id of ids) linkInfo.set(kind + id, byId.get(id) || null);
+    paintChips(false);
+  }
 }
 
 async function openMemo(id) {
@@ -236,7 +303,7 @@ async function openMemo(id) {
   const editable = canEditMemo(m);
   $("e-title").disabled = $("e-cat").disabled = $("e-folder").disabled = !editable;
   $("e-body").inert = !editable; // 보기 전용: 서버가 편집을 버리므로 입력 자체를 막는다
-  ed = EvasEditor.create({ parent: $("e-body"), memoId: id, user: { name: me.name, color: colorOf(me.id) } });
+  ed = EvasEditor.create({ parent: $("e-body"), memoId: id, user: { name: me.name, color: colorOf(me.id) }, linkSource });
   watch(ed, id);
   if (focusTitle) $("e-title").focus();
   focusTitle = false;
@@ -251,6 +318,7 @@ function watch(e, id) {
   p.doc.on("update", (_u, origin) => {
     if (ed !== e) return;
     clearTimeout(previewTimer); previewTimer = setTimeout(renderPreview, 200);
+    clearTimeout(chipTimer); chipTimer = setTimeout(paintChips, 500);
     if (origin === p) return; // origin === p: 서버에서 받은 변경
     if (!p.wsconnected) return status("연결 끊김 · 다시 연결되면 저장됩니다");
     // 서버는 받은 편집을 2초 안에 저장한다(ws.SAVE_DELAY). 확인 응답은 없어 입력이 멎고 3초 뒤 저장됨으로 본다
@@ -278,7 +346,7 @@ function watch(e, id) {
     // 서버의 접속 거절(권한 없음·지워짐)은 브라우저에 1006으로만 보여 API로 확인한다
     fetch(`/api/memos/${id}`).then((r) => {
       if (ed !== e) return;
-      if (r.status === 401) location.href = "/auth/login";
+      if (r.status === 401) location.href = "/auth/login?next=" + encodeURIComponent("/?memo=" + id);
       else if (r.status === 404) leave("메모가 삭제되었거나 볼 수 없습니다");
     }, () => { /* 아직 오프라인 */ });
   });
@@ -290,7 +358,8 @@ async function closeMemo() {
   if (ed) { const e = ed; ed = null; e.destroy(); }
   cur = null; deleting = false;
   clearTimeout(previewTimer); setMode("edit");
-  $("e-body").replaceChildren(); $("e-preview").replaceChildren(); $("e-peers").textContent = ""; status("");
+  clearTimeout(chipTimer); chipSeq++; linkInfo.clear(); $("e-links").hidden = true;
+  $("e-body").replaceChildren(); $("e-preview").replaceChildren(); $("e-links").replaceChildren(); $("e-peers").textContent = ""; status("");
 }
 
 function leave(text) {
@@ -349,12 +418,14 @@ $("refresh").onclick = () => location.reload(); // 홈 화면에 설치한 앱�
 
 async function start() {
   try {
-    [me, cats] = await Promise.all([api("/api/me"), api("/api/categories")]);
+    [me, cats, conf] = await Promise.all([api("/api/me"), api("/api/categories"), api("/api/config").catch(() => ({}))]);
   } catch (e) {
     $("msg").hidden = false; $("msg").textContent = "불러오지 못했습니다: " + e.message;
     return;
   }
   initBell();
+  // 앱 전환: 캘린더 주소가 http(s)로 설정돼 있을 때만 링크(같은 탭)
+  if (MemoLink.base(conf.calendar_url)) { $("to-cal").href = conf.calendar_url + "/"; $("apps-other").hidden = false; }
   $("add").hidden = !canEdit();
   $("admin-link").hidden = me.role !== "admin";
   $("who").textContent = me.name;

@@ -1,11 +1,11 @@
 import { EditorState, Prec, RangeSetBuilder } from "@codemirror/state";
 import {
   EditorView, Decoration, ViewPlugin, WidgetType, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars,
-  drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightActiveLine,
+  drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightActiveLine, tooltips,
 } from "@codemirror/view";
 import { defaultKeymap, indentLess, indentMore } from "@codemirror/commands";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
-import { closeBrackets, autocompletion, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
+import { closeBrackets, autocompletion, closeBracketsKeymap, completionKeymap, completionStatus } from "@codemirror/autocomplete";
 import { lintKeymap } from "@codemirror/lint";
 import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
@@ -127,26 +127,86 @@ const tabKeys = Prec.high(keymap.of([{ key: "Tab", run: tab, shift: shiftTab }, 
 const setup = [
   lineNumbers(), highlightActiveLineGutter(), highlightSpecialChars(), foldGutter(), drawSelection(), dropCursor(),
   EditorState.allowMultipleSelections.of(true), indentOnInput(), syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-  bracketMatching(), closeBrackets(), autocompletion(), rectangularSelection(), crosshairCursor(), highlightActiveLine(),
+  bracketMatching(), closeBrackets(), autocompletion({ aboveCursor: true, icons: false, activateOnTypingDelay: 250 }),
+  rectangularSelection(), crosshairCursor(), highlightActiveLine(),
   highlightSelectionMatches(),
   keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...yUndoManagerKeymap, ...foldKeymap, ...completionKeymap, ...lintKeymap]),
 ];
 
-// window.EvasEditor.create({parent, memoId, user:{name,color}}) -> {destroy(), view, awareness, provider}
-// provider: 화면이 연결 상태('status')·닫힘 코드('connection-close')·문서(provider.doc)를 본다
-function create({ parent, memoId, user }) {
+// @ 태그 힌트. "@글자"(@ 앞은 줄 처음이나 공백, 글자에 공백·@ 없음)를 치면 화면이 준 linkSource(kind, q)로 일정·메모를 받아
+// 종류별로 나눠 보여 준다. 번들은 네트워크를 모른다: linkSource는 [{title, detail?, text}](text: 넣을 링크 원문)를 주거나, 실패하면 예외
+const LINK_KINDS = [["event", "일정"], ["memo", "메모"]];
+const AT = /@[^\s@]{0,30}$/;
+// 커서 바로 앞 "@글자"의 @ 위치(조건이 안 맞으면 -1)
+function atFrom(state) {
+  const sel = state.selection.main;
+  if (state.selection.ranges.length > 1 || !sel.empty) return -1;
+  const line = state.doc.lineAt(sel.head), m = AT.exec(state.sliceDoc(Math.max(line.from, sel.head - 31), sel.head));
+  const from = m ? sel.head - m[0].length : -1;
+  return from >= 0 && (from === line.from || /\s/.test(state.sliceDoc(from - 1, from))) ? from : -1;
+}
+function atCompletions(linkSource, undo) {
+  // 고른 순간에도 커서가 목록을 띄운 그 "@글자" 바로 뒤일 때만 바꾼다(그 사이 커서를 옮겼으면 아무것도 하지 않는다)
+  const insert = (text) => (view, _c, from) => {
+    if (atFrom(view.state) !== from) return;
+    const to = view.state.selection.main.head, ins = text + " ";
+    undo.stopCapturing(); // 되돌리기(Ctrl+Z)가 방금 친 @글자까지 함께 지우지 않고 태그만 되돌리게
+    view.dispatch({ changes: { from, to, insert: ins }, selection: { anchor: from + ins.length }, userEvent: "input.complete", scrollIntoView: true });
+  };
+  return async (ctx) => {
+    const from = atFrom(ctx.state);
+    if (from < 0) return null;
+    const typed = ctx.state.sliceDoc(from + 1, ctx.pos), q = typed.length < 2 ? "" : typed; // 2글자 미만이면 최근 항목
+    const groups = await Promise.all(LINK_KINDS.map(async ([kind, name], rank) => {
+      const section = { name, rank };
+      try {
+        return (await linkSource(kind, q)).map((r) => ({ label: r.title, detail: r.detail, section, apply: insert(r.text) }));
+      } catch { // 상대 서버가 꺼져 있어도 입력은 그대로: 안내 한 줄만(골라도 아무것도 넣지 않는다)
+        return [{ label: "연결할 수 없습니다", section, apply: () => {} }];
+      }
+    }));
+    const options = groups.flat();
+    return options.length ? { from, options, filter: false } : null; // 거르기는 서버가 했다
+  };
+}
+// 힌트 목록은 커서 위쪽에만 뜬다(사용자 요구). CodeMirror는 위가 모자라면 아래로 뒤집으므로 툴팁이 쓸 공간을 커서 줄 아래 끝까지로
+// 묶어 뒤집히지 않게 하고(위가 모자라면 목록이 줄어 안에서 스크롤), 목록이 처음 뜰 때 커서가 화면 맨 위 근처면 페이지를 올려 공간을 만든다
+const ROOM = 240;
+const hintsAbove = [
+  tooltips({
+    tooltipSpace: (view) => {
+      const c = view.coordsAtPos(view.state.selection.main.head);
+      return { top: 0, left: 0, right: innerWidth, bottom: c ? Math.min(innerHeight, c.bottom) : innerHeight };
+    },
+  }),
+  EditorView.updateListener.of((u) => {
+    if (completionStatus(u.state) !== "active" || completionStatus(u.startState) === "active") return;
+    u.view.requestMeasure({
+      read: (v) => v.coordsAtPos(v.state.selection.main.head),
+      write: (c) => { if (c && c.top < ROOM) scrollBy(0, c.top - ROOM); },
+    });
+  }),
+];
+
+// window.EvasEditor.create({parent, memoId, user:{name,color}, linkSource?}) -> {destroy(), view, awareness, provider}
+// provider: 화면이 연결 상태('status')·닫힘 코드('connection-close')·문서(provider.doc)를 본다. linkSource: 위 @ 태그 힌트
+function create({ parent, memoId, user, linkSource }) {
   const doc = new Y.Doc();
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   // y-websocket은 `${서버주소}/${방이름}`으로 접속한다 -> /ws/memos/{memoId}
   const provider = new WebsocketProvider(`${proto}//${location.host}/ws/memos`, String(memoId), doc);
   provider.awareness.setLocalStateField("user", { name: user.name, color: user.color, colorLight: user.color + "33" });
   const text = doc.getText("text");
+  const undoManager = new Y.UndoManager(text); // yCollab 기본과 같다(내 편집만 되돌림). 태그 넣기가 끊어 쓰려고 직접 만든다
+  // 소스 함수는 한 번만 만든다: languageData가 부를 때마다 새 함수면 CodeMirror가 다른 소스로 보고 끝없이 다시 묻는다
+  const atSource = linkSource && atCompletions(linkSource, undoManager);
   const view = new EditorView({
     parent,
     state: EditorState.create({
       doc: text.toString(),
       extensions: [setup, EditorView.lineWrapping, indentUnit.of("    "), tabKeys, markdown({ base: markdownLanguage }),
-        syntaxHighlighting(mdHighlight), links, yCollab(text, provider.awareness)],
+        syntaxHighlighting(mdHighlight), links, yCollab(text, provider.awareness, { undoManager }),
+        atSource ? [EditorState.languageData.of(() => [{ autocomplete: atSource }]), hintsAbove] : []],
     }),
   });
   return {

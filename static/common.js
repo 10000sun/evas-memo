@@ -1,8 +1,12 @@
 const $ = (id) => document.getElementById(id);
 async function api(path, opts = {}) {
   const r = await fetch(path, { ...opts, headers: { "content-type": "application/json" } });
-  // 로그인이 안 된 상태면 디스코드 로그인으로 보낸다
-  if (r.status === 401) { location.href = "/auth/login"; return new Promise(() => {}); }
+  // 로그인이 안 된 상태면 디스코드 로그인으로 보낸다. 로그인 뒤 보던 메모(#번호, 서버는 #을 못 받아 ?memo=로)로 돌아온다
+  if (r.status === 401) {
+    const id = /^#\d+$/.test(location.hash) ? location.hash.slice(1) : "";
+    location.href = "/auth/login?next=" + encodeURIComponent(id ? "/?memo=" + id : location.pathname + location.search);
+    return new Promise(() => {});
+  }
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
     const d = body.detail;

@@ -27,7 +27,7 @@
 `python scripts/make_vapid.py` 출력 세 줄을 `.env`에 붙여 넣는다. 한 번 정하면 바꾸지 않는다(바꾸면 기존 구독이 모두 무효).
 
 ## 캘린더 연동(선택)
-메모 본문에서 `@`로 캘린더 일정을, 캘린더에서 공동 메모를 태그한다(개인 메모 제목은 캘린더로 나가지 않는다). 두 앱 `.env`에 같은 `LINK_API_KEY`를 넣고(만들기: `python -c "import secrets;print(secrets.token_urlsafe(32))"`), 메모 `.env`에는 `CALENDAR_URL`(캘린더 공개 주소), 필요하면 `CALENDAR_INTERNAL_URL`(기본 `http://127.0.0.1:8000`)을 적는다. `LINK_API_KEY`가 비어 있으면 연동은 꺼진다. 자세한 설정은 [docs/DEPLOY.md](docs/DEPLOY.md).
+메모 본문에서 `@`로 캘린더 일정과 다른 메모를, 캘린더에서 공동 메모를 태그한다(개인 메모 제목은 캘린더로 나가지 않는다). 태그는 `[@제목](주소)` 링크로 들어가고 편집 화면 본문 위 연결 칩으로 모여 누르면 그 일정·메모로 간다. 헤더의 `에바스 캘린더 | 에바스 메모`로 두 앱을 오간다. 두 앱 `.env`에 같은 `LINK_API_KEY`를 넣고(만들기: `python -c "import secrets;print(secrets.token_urlsafe(32))"`), 메모 `.env`에는 `CALENDAR_URL`(캘린더 공개 주소), 필요하면 `CALENDAR_INTERNAL_URL`(기본 `http://127.0.0.1:8000`)을 적는다. `LINK_API_KEY`가 비어 있으면 연동은 꺼진다. 자세한 설정은 [docs/DEPLOY.md](docs/DEPLOY.md).
 
 ## 테스트
 `python -m pytest`
