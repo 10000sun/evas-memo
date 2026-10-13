@@ -3,19 +3,19 @@
 :root {
   color-scheme: light;
   --bg: #f6f7f9; --surface: #fff; --text: #1a1d26; --muted: #737a8c; --line: #eceef3;
-  --primary: #3b5bdb; --primary-ink: #fff; --danger: #d6336c; --ok: #2b8a3e;
+  --primary: #3b5bdb; --primary-ink: #fff; --danger: #d6336c; --ok: #2b8a3e; --admin: #b35c00;
   --radius: 12px; --shadow: none;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #14161c; --surface: #0e1015; --text: #e9ebf2; --muted: #8e95a8; --line: #23283a;
-    --primary: #7b96ff; --primary-ink: #0e1220; --danger: #ff6b9a; --ok: #69db7c; --shadow: none;
+    --primary: #7b96ff; --primary-ink: #0e1220; --danger: #ff6b9a; --ok: #69db7c; --admin: #ffa94d; --shadow: none;
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
     --bg: #14161c; --surface: #0e1015; --text: #e9ebf2; --muted: #8e95a8; --line: #23283a;
-    --primary: #7b96ff; --primary-ink: #0e1220; --danger: #ff6b9a; --ok: #69db7c; --shadow: none;
+    --primary: #7b96ff; --primary-ink: #0e1220; --danger: #ff6b9a; --ok: #69db7c; --admin: #ffa94d; --shadow: none;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -164,6 +164,9 @@ dialog#notif { margin: 56px 16px auto auto; }
 .edit-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
 .badge { font-size: .75rem; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--bg); color: var(--muted); }
 .badge.shared { color: var(--primary); background: color-mix(in srgb, var(--primary) 12%, transparent); }
+.badge.admin { color: var(--admin); background: color-mix(in srgb, var(--admin) 14%, transparent); } /* 전율 */
+.memo .badge { padding: 0 6px; font-size: .7rem; }
+.btns .moves { display: contents; } /* 옮기기 버튼들이 다른 버튼과 같은 줄에 흐른다 */
 .e-title { width: 100%; font-size: 1.15rem; font-weight: 700; border-color: transparent; padding-left: 4px; }
 .e-row { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; margin: 8px 0 10px; }
 label.inline { flex-direction: row; align-items: center; gap: 8px; }
