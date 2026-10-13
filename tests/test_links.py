@@ -145,10 +145,40 @@ def test_api_link_events_upstream_down_is_502_fast(c, monkeypatch, fail):
 
 
 def test_api_link_off_without_key(c, monkeypatch):
-    monkeypatch.delenv("LINK_API_KEY")  # 연동 기능 전부 꺼짐, 앱의 나머지는 정상
+    monkeypatch.delenv("LINK_API_KEY")  # 캘린더 연동은 꺼짐, 앱의 나머지는 정상
     assert c.get("/api/link/events", headers=as_("a")).status_code == 404
-    assert c.get("/api/link/memos", headers=as_("a")).status_code == 404
     assert c.get("/api/memos?kind=shared", headers=as_("a")).status_code == 200
+
+
+def test_api_link_memos_works_without_key(c, monkeypatch):
+    # 메모->메모 @ 태그는 로컬 기능이라 키와 무관하다. scope 규칙·개인 비노출은 그대로
+    s = new(c, "a", "shared", "공동")
+    pa = new(c, "a", "personal", "a의 개인")
+    pb = new(c, "b", "personal", "b의 개인")
+    monkeypatch.delenv("LINK_API_KEY")
+    got = lambda qs: sorted(m["id"] for m in c.get("/api/link/memos" + qs, headers=as_("a")).json())
+    assert c.get("/api/link/memos", headers=as_("a")).status_code == 200
+    assert got("") == [s] and got("?scope=shared") == [s]
+    assert got("?scope=all") == sorted([s, pa])
+    assert got(f"?scope=all&ids={s},{pa},{pb}") == sorted([s, pa])
+    assert c.get("/api/link/memos").status_code == 401
+    assert internal(c).status_code == 404  # 내부 경로는 키 없이는 계속 닫혀 있다
+
+
+@pytest.mark.parametrize("ids", ["9" * 30, "9" * 5000, "٣", "²", "2,3," + "9" * 19, "-2,+2, ,2.5,0x2"],
+                         ids=["9x30", "9x5000", "arabic-digit", "superscript", "19digits", "signs"])
+def test_ids_garbage_is_skipped_not_500(c, ids):
+    s = new(c, "a", "shared", "공동")
+    for r in (internal(c, f"?ids={ids},{s}"), c.get(f"/api/link/memos?scope=all&ids={ids},{s}", headers=as_("a"))):
+        assert r.status_code == 200 and [m["id"] for m in r.json()] == [s]
+    assert internal(c, f"?ids={ids}").json() == []
+
+
+def test_ids_token_count_capped(c):
+    s = new(c, "a", "shared", "공동")
+    # 100번째 토큰 뒤는 보지 않는다
+    assert internal(c, "?ids=" + ",".join(["x"] * 100) + f",{s}").json() == []
+    assert [m["id"] for m in internal(c, "?ids=" + ",".join(["x"] * 99) + f",{s}").json()] == [s]
 
 
 def test_api_link_uses_3s_timeout(c, monkeypatch):
@@ -161,6 +191,7 @@ def test_api_link_uses_3s_timeout(c, monkeypatch):
     monkeypatch.setattr(httpx, "Client", make)
     c.get("/api/link/events", headers=as_("a"))
     assert got["timeout"] == 3
+    assert got["trust_env"] is False  # 시스템 프록시가 loopback 호출과 X-Link-Key를 가로채지 않게
 
 
 def test_config_endpoint(client, monkeypatch):
@@ -222,6 +253,18 @@ def test_login_callback_redirects_to_next(discord):
 ])
 def test_login_next_sanitized(discord, nxt, want):
     assert login_then_callback(discord, nxt).headers["location"] == want
+
+
+def test_login_next_length_limit(discord):
+    ok = "/?memo=" + "1" * (200 - 7)
+    assert len(ok) == 200 and login_then_callback(discord, ok).headers["location"] == ok
+    discord.post("/auth/logout")
+    assert login_then_callback(discord, ok + "1").headers["location"] == "/"  # 201자는 거절
+    discord.post("/auth/logout")
+    # 아주 긴 next가 쿠키를 키워 로그인을 깨뜨리지 않는다
+    r = login_then_callback(discord, "/" + "a" * 6000)
+    assert r.status_code in (302, 307) and r.headers["location"] == "/"
+    assert discord.get("/api/me").json()["id"] == "boss"
 
 
 def test_login_next_stored_in_session(discord):

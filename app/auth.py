@@ -93,7 +93,7 @@ def fail(msg, status=400):
 
 def safe_next(n) -> str:
     """로그인 뒤 돌아갈 곳. 같은 사이트의 경로+쿼리만 허용하고 그 밖(외부 주소·`//`·`\\`·제어문자·`://`)은 `/`로 돌린다."""
-    if (not isinstance(n, str) or not n.startswith("/") or "//" in n or "\\" in n or "://" in n
+    if (not isinstance(n, str) or not n.startswith("/") or len(n) > 200 or "//" in n or "\\" in n or "://" in n
             or any(ord(ch) < 32 or ord(ch) == 127 for ch in n)):
         return "/"
     return n

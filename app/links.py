@@ -16,6 +16,7 @@ from .auth import current_user
 
 router = APIRouter()
 MAX_IDS = 50
+MAX_TOKENS = 100  # 변환 전에 토큰 수부터 자른다
 
 
 def _env(name):
@@ -49,7 +50,9 @@ def need_link(_=Depends(current_user)):
 
 
 def parse_ids(ids: str):
-    return [int(i) for i in ids.split(",") if i.strip().isdecimal()][:MAX_IDS]
+    # 숫자(ASCII 0-9) 18자리 이하만: 거대한 수는 sqlite가 OverflowError를 내고, 유니코드 숫자(٣, ²)는 int()가 다르게 읽는다
+    toks = (t.strip() for t in ids.split(",")[:MAX_TOKENS])
+    return [int(t) for t in toks if t.isascii() and t.isdigit() and len(t) <= 18][:MAX_IDS]
 
 
 def memo_rows(q: str = "", limit: int = 8, ids: str | None = None, user_id: str | None = None):
@@ -80,7 +83,7 @@ def internal_memos(q: str = "", limit: int = 8, ids: str | None = None, _=Depend
 
 @router.get("/api/link/memos")
 def link_memos(q: str = "", limit: int = 8, ids: str | None = None, scope: Literal["shared", "all"] = "shared",
-               user=Depends(current_user), _=Depends(need_link)):
+               user=Depends(current_user)):
     return memo_rows(q, limit, ids, user["id"] if scope == "all" else None)
 
 
@@ -89,7 +92,7 @@ def link_events(q: str | None = None, limit: int | None = None, ids: str | None 
     """캘린더 일정 힌트·칩 조회 프록시. 캘린더가 꺼져 있어도 3초 안에 502로 끝나고 이 앱의 다른 기능엔 영향이 없다."""
     params = {"ids": ids} if ids is not None else {k: v for k, v in (("q", q), ("limit", limit)) if v is not None}
     try:
-        with httpx.Client(timeout=3) as h:
+        with httpx.Client(timeout=3, trust_env=False) as h:
             r = h.get(calendar_internal_url() + "/internal/link/events", params=params, headers={"X-Link-Key": link_key()})
             r.raise_for_status()
             data = r.json()
