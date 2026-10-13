@@ -91,7 +91,7 @@ def pick_members(q: str = "", limit: int = 20, _=Depends(current_user)):
     q = q.strip().casefold()
     with db.connect() as con:
         found = [r for r in rows(con, "SELECT id, name FROM members ORDER BY name") if q in r["name"].casefold()]
-    return found[:max(1, min(limit, 20))]
+    return found[:max(1, min(limit, 200))]  # 기본 20개, 공개 범위 창은 전원을 한 번에 받아 화면에서 거른다(상한 200)
 
 
 # --- 분류 ---

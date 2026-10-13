@@ -6,7 +6,7 @@ import {
 import { defaultKeymap, indentLess, indentMore } from "@codemirror/commands";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 import {
-  closeBrackets, autocompletion, closeBracketsKeymap, completionKeymap, completionStatus, closeCompletion, selectedCompletion,
+  closeBrackets, autocompletion, closeBracketsKeymap, completionKeymap, completionStatus, closeCompletion, selectedCompletion, acceptCompletion,
 } from "@codemirror/autocomplete";
 import { lintKeymap } from "@codemirror/lint";
 import * as Y from "yjs";
@@ -46,7 +46,9 @@ class OpenLink extends WidgetType {
   }
   ignoreEvent() { return true; } // 버튼 클릭이 커서 이동·선택으로 처리되지 않게
 }
-const urlMark = Decoration.mark({ class: "cm-url" });
+// 주소에 마우스를 올리면 여는 방법을 알려 준다(맥은 ⌘, 그 밖은 Ctrl)
+const MOD = /Mac|iPhone|iPad/.test((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "") ? "⌘" : "Ctrl";
+const urlMark = Decoration.mark({ class: "cm-url", attributes: { title: `${MOD}+클릭으로 새 탭에서 열기 (주소 뒤 ↗ 버튼도 됩니다)` } });
 function linkDecos(view) {
   const b = new RangeSetBuilder();
   for (const { from, to } of view.visibleRanges)
@@ -179,6 +181,15 @@ const ROOM = 240;
 const failGuard = Prec.highest(keymap.of([{
   key: "Enter",
   run: (view) => { if (selectedCompletion(view.state)?.failed) closeCompletion(view); return false; },
+}, {
+  // Tab도 Enter처럼 고른 힌트를 넣는다(↑↓로 고르고 Tab). 목록이 없을 때는 아래 tabKeys의 4칸 들여쓰기 그대로.
+  // 안내 행("연결할 수 없습니다")이 골라져 있으면 목록만 닫고 Tab은 본문에(4칸) 넘긴다
+  key: "Tab",
+  run: (view) => {
+    if (completionStatus(view.state) !== "active") return false;
+    if (selectedCompletion(view.state)?.failed) { closeCompletion(view); return false; }
+    return acceptCompletion(view);
+  },
 }]));
 const hintsAbove = [
   tooltips({

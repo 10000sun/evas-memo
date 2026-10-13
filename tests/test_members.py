@@ -73,7 +73,8 @@ def test_pick_only_id_and_name_and_respects_q_limit(client):
     assert all(set(x) == {"id", "name"} for x in r.json())
     assert [x["id"] for x in client.get("/api/members/pick?q=aLi", headers=v).json()] == ["zz"]
     assert len(client.get("/api/members/pick?limit=3", headers=v).json()) == 3
-    assert len(client.get("/api/members/pick?limit=999", headers=v).json()) == 20
+    all_ = client.get("/api/members/pick?limit=999", headers=v).json()
+    assert len(all_) >= 26 and len(all_) <= 200  # 상한은 200: 전원을 한 번에 받는다(기본은 20개)
     assert client.get("/api/members/pick?q=없는이름", headers=v).json() == []
     assert client.get("/api/members/pick").status_code == 401
 

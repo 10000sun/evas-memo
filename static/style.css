@@ -123,12 +123,18 @@ label input, label select, label textarea { font-weight: 400; font-size: .95rem;
 .err { color: var(--danger); margin: 0; min-height: 1.2em; font-size: .85rem; }
 
 /* 도움말 */
-.sh-modes { display: grid; gap: 8px; margin: 10px 0; }
+/* 공개 범위 창: 개인|공동 탭과 같은 두 칸 토글 */
+.sh-seg { display: flex; width: 100%; margin: 4px 0 6px; }
+.sh-seg button { flex: 1; }
+.sh-seg button:disabled { cursor: default; }
+.sh-seg button[aria-pressed="false"]:disabled { opacity: .5; }
 .sh-people[hidden] { display: none; }
-.sh-list { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 6px; }
-.sh-list li { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 10px; }
+.sh-people input { width: 100%; margin-top: 4px; }
+.help ul.sh-list { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 4px; }
+.sh-list li { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 4px 6px 4px 12px; border-radius: 8px; background: var(--bg); }
 .sh-list li span { flex: 1; overflow-wrap: anywhere; }
-.sh-list.chosen li { background: color-mix(in srgb, var(--primary) 10%, transparent); }
+.sh-list li .btn { min-height: 30px; padding: 0 10px; font-size: .85rem; }
+.sh-list.chosen li { background: color-mix(in srgb, var(--primary) 12%, transparent); }
 .lock { margin-right: 4px; }
 .md-user, .chip.user { background: color-mix(in srgb, var(--primary) 14%, transparent); border-radius: 999px; padding: 0 8px; }
 .chip.user { cursor: default; text-decoration: none; }
