@@ -100,11 +100,14 @@ def _lock(con, fid, user, f):
     return get_visible(con, fid, user)
 
 
-def _check_dup(con, kind, owner_id, parent_id, name, self_id=None):
+def _check_dup(con, kind, owner_id, parent_id, name, user, self_id=None):
+    """같은 위치의 같은 이름 폴더. 호출자가 볼 수 있는 폴더만 센다: 못 보는 비공개 폴더의 이름이 중복 오류로 새지 않게."""
     # IS: parent_id·owner_id가 NULL일 수 있어 =로는 비교가 안 된다
-    if con.execute("SELECT 1 FROM folders WHERE kind=? AND owner_id IS ? AND parent_id IS ? AND name=? AND id IS NOT ?",
-                   (kind, owner_id, parent_id, name, self_id)).fetchone():
-        raise HTTPException(409, "같은 위치에 같은 이름의 폴더가 있습니다")
+    cache = {}
+    for f in con.execute(f"SELECT {ws.FOLDER_ACCESS} FROM folders WHERE kind=? AND owner_id IS ? AND parent_id IS ? "
+                         "AND name=? AND id IS NOT ?", (kind, owner_id, parent_id, name, self_id)).fetchall():
+        if ws.can_access(f, user, con, cache):
+            raise HTTPException(409, "같은 위치에 같은 이름의 폴더가 있습니다")
 
 
 def _need_kind(kind, user):
@@ -127,13 +130,13 @@ def _publicity(con, fid):
 
 def _keep_restricted(con, fid):
     """폴더(와 하위)를 지우면 메모의 folder_id가 비어 메모 자신의 설정(기본 '전체')으로 돌아간다. 폴더 제한 덕에 숨겨져 있던
-    메모가 그대로 전체 공개로 드러나지 않게, 지우기 전에 폴더의 목록(과 폴더 만든 사람)을 메모 자신의 제한으로 옮겨 둔다."""
-    ids = {r[0] for r in con.execute(SUBTREE + "SELECT id FROM sub", (fid,))}
+    메모가 그대로 전체 공개로 드러나지 않게, 지우기 전에 메모에 적용되던 폴더의 목록(과 제한을 건 폴더의 만든 사람)을 메모
+    자신의 제한으로 옮겨 둔다. 제한을 건 폴더가 지우는 폴더이든 그 상위이든 같다(어느 쪽이든 메모는 폴더를 잃는다)."""
     cache = {}
     for m in con.execute(SUBTREE + f"SELECT {ws.MEMO_ACCESS} FROM memos WHERE kind='shared' "
                          "AND folder_id IN (SELECT id FROM sub)", (fid,)).fetchall():
         r = ws.restrictor(con, m, cache)
-        if r and r[0] == "folder_viewers" and r[1] in ids:
+        if r and r[0] == "folder_viewers":  # 메모 자신의 제한이면 그대로 두면 된다. 제한이 없으면 아무것도 옮기지 않는다
             con.execute("UPDATE memos SET visibility='restricted' WHERE id=?", (m["id"],))
             set_viewers(con, "memo_viewers", "memo_id", m["id"],
                         sorted((ws.viewer_ids(con, r, cache) | {r[2]}) - {None}))
@@ -165,7 +168,7 @@ def add_folder(f: FolderIn, user=Depends(current_user)):
                 raise HTTPException(422, "상위 폴더의 종류가 다릅니다")
             if parent["parent_id"] is not None:
                 raise HTTPException(422, "하위 폴더 아래에는 만들 수 없습니다")
-        _check_dup(con, f.kind, owner, f.parent_id, f.name)
+        _check_dup(con, f.kind, owner, f.parent_id, f.name, user)
         try:
             fid = con.execute(
                 "INSERT INTO folders(kind,owner_id,parent_id,name,created_by,created_name,created_at) VALUES(?,?,?,?,?,?,?)",
@@ -184,8 +187,8 @@ def rename_folder(fid: int, f: FolderName, user=Depends(current_user)):
         cur = get_visible(con, fid, user)  # 남의 개인 폴더는 여기서 404
         if cur["kind"] == "shared":
             _need_editor(user)
-        _check_dup(con, cur["kind"], cur["owner_id"], cur["parent_id"], f.name, fid)
         _lock(con, fid, user, cur)
+        _check_dup(con, cur["kind"], cur["owner_id"], cur["parent_id"], f.name, user, fid)
         if not con.execute("UPDATE folders SET name=? WHERE id=?", (f.name, fid)).rowcount:
             raise HTTPException(404, "폴더가 없습니다")
         return _out(con, fid, user)

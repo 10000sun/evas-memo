@@ -285,7 +285,9 @@ def test_moving_memo_in_and_out_of_restricted_folder(c):
     with c:
         with connect(c, m, "c") as wc:
             pc = Peer(wc)
-            assert c.put(f"/api/memos/{m}", json={"folder_id": pub}, headers=as_("c")).status_code == 200
+            # 목록에만 있는 c는 b를 새로 보이게 하는 이동을 못 한다(403). 만든 사람 a가 옮기면 c는 닫힌다
+            assert c.put(f"/api/memos/{m}", json={"folder_id": pub}, headers=as_("c")).status_code == 403
+            assert c.put(f"/api/memos/{m}", json={"folder_id": pub}, headers=as_("a")).status_code == 200
             assert wait_closed(pc) == 4404
     assert m in shared_ids(c, "b") and m not in shared_ids(c, "c")
     # 제한 폴더로 새 메모를 만들면 폴더 목록을 따른다(작성자가 목록에 없으면 만들 수 없다)
@@ -608,3 +610,97 @@ def test_role_demotion_closes_restricted_connection_of_ex_admin(c):
             time.sleep(0.3)
             assert pb.closed is None
         assert rejected(c, m, "boss2") == 1008
+
+
+def test_deleting_subfolder_keeps_inherited_restriction(c):
+    """제한을 건 항목이 지우는 폴더의 상위여도, 지운 뒤 메모가 전체 공개로 되돌아가지 않는다."""
+    p = folder(c, "a", "상위")["id"]
+    s = folder(c, "a", "하위", p)["id"]
+    m = new(c, "a", "shared", "하위의 메모", folder_id=s)["id"]
+    own = new(c, "a", "shared", "자기목록", folder_id=s)["id"]
+    share(c, own, "a", "restricted", ["c"])  # 폴더 목록이 우선하므로 c는 못 본다
+    fshare(c, p, "a", "restricted", ["b"])
+    assert m not in shared_ids(c, "c") and own not in shared_ids(c, "c")
+    assert c.delete(f"/api/folders/{s}", headers=as_("a")).status_code == 204
+    for mid in (m, own):
+        assert c.get(f"/api/memos/{mid}", headers=as_("c")).status_code == 404
+        assert mid not in shared_ids(c, "c") and shared_ids(c, "c", "&q=메모") == []
+        assert c.get(f"/api/link/memos?ids={mid}", headers=as_("c")).json() == []
+        assert c.get(f"/internal/link/memos?ids={mid}", headers={"X-Link-Key": KEY}).json() == []
+        assert mid in shared_ids(c, "b") and mid in shared_ids(c, "a") and mid in shared_ids(c, "boss")
+
+
+def test_deleting_folder_with_no_restriction_moves_nothing(c):
+    p = folder(c, "a", "상위")["id"]
+    s = folder(c, "a", "하위", p)["id"]
+    m = new(c, "a", "shared", folder_id=s)["id"]
+    mine = new(c, "a", "shared", folder_id=s)["id"]
+    share(c, mine, "a", "restricted", ["b"])  # 메모 자신의 설정은 그대로
+    assert c.delete(f"/api/folders/{p}", headers=as_("a")).status_code == 204
+    assert m in shared_ids(c, "c") and mine not in shared_ids(c, "c") and mine in shared_ids(c, "b")
+    with db.connect() as con:
+        assert con.execute("SELECT visibility FROM memos WHERE id=?", (m,)).fetchone()[0] == "all"
+        assert con.execute("SELECT COUNT(*) FROM memo_viewers WHERE memo_id=?", (m,)).fetchone()[0] == 0
+
+
+def test_folder_name_duplicate_check_ignores_folders_caller_cannot_see(c):
+    secret = folder(c, "a", "비밀프로젝트")["id"]
+    fshare(c, secret, "a", "restricted", ["b"])
+    other = folder(c, "c", "다른이름")["id"]
+    # c에게는 없는 폴더라 같은 이름을 만들어도 일반 경우와 똑같이 성공한다
+    ok = folder(c, "c", "비밀프로젝트")
+    plain = folder(c, "c", "아무이름")
+    assert set(ok) == set(plain) and ok["visibility"] == plain["visibility"] == "all"
+    assert c.delete(f"/api/folders/{ok['id']}", headers=as_("c")).status_code == 204
+    r = c.put(f"/api/folders/{other}", json=dict(name="비밀프로젝트"), headers=as_("c"))  # 이름 바꾸기도 마찬가지
+    assert r.status_code == 200 and set(r.json()) == set(plain)
+    # 볼 수 있는 사람(선택된 사람·관리자)에게는 중복이다
+    folder(c, "b", "비밀프로젝트", status=409)
+    folder(c, "boss", "비밀프로젝트", status=409)
+    # 보이는 폴더끼리는 여전히 중복 금지
+    folder(c, "c", "아무이름", status=409)
+
+
+def test_activity_line_never_carries_a_title_that_was_never_public(c, pushed):
+    rf = folder(c, "a", "비공개")["id"]
+    fshare(c, rf, "a", "restricted", ["a"])
+    m = new(c, "a", "shared", "공개제목")["id"]
+    r = c.put(f"/api/memos/{m}", json={"title": "NEVER-PUBLIC-TITLE", "folder_id": rf}, headers=as_("a"))
+    assert r.status_code == 200
+    items = feed(c, "c")["items"]
+    assert "NEVER-PUBLIC-TITLE" not in [i["title"] for i in items]
+    assert [(i["kind"], i["title"]) for i in items[:1]] == [("delete", "공개제목")]
+    # 비공개 -> 공개: '작성' 줄에는 이 시점의 제목(이제 공개)
+    pushed.clear()
+    assert c.put(f"/api/memos/{m}", json={"title": "이제공개", "folder_id": None}, headers=as_("a")).status_code == 200
+    assert [(i["kind"], i["title"]) for i in feed(c, "c")["items"][:1]] == [("add", "이제공개")]
+    assert [p[0] for p in pushed] == ["add"]
+
+
+def test_listed_person_cannot_widen_audience_by_moving(c, pushed):
+    rf = folder(c, "a", "비공개")["id"]
+    fshare(c, rf, "a", "restricted", ["b"])
+    wide = folder(c, "a", "넓은")["id"]
+    fshare(c, wide, "a", "restricted", ["b", "c"])
+    narrow = folder(c, "a", "좁은")["id"]
+    fshare(c, narrow, "a", "restricted", ["b"])
+    m = new(c, "a", "shared", "a의 메모", folder_id=rf)["id"]
+    n_items = len(feed(c, "a")["items"])
+    pushed.clear()
+    # 선택된 사람(b)이 만든 사람도 아닌 메모를 폴더 밖으로 빼거나 더 넓은 목록으로 옮기는 것은 막힌다
+    for target in (None, wide):
+        assert c.put(f"/api/memos/{m}", json={"folder_id": target}, headers=as_("b")).status_code == 403
+    assert m not in shared_ids(c, "c") and c.get(f"/api/memos/{m}", headers=as_("b")).json()["folder_id"] == rf
+    assert len(feed(c, "a")["items"]) == n_items and pushed == []
+    # 같거나 더 좁은 목록으로는 옮길 수 있다
+    assert c.put(f"/api/memos/{m}", json={"folder_id": narrow}, headers=as_("b")).status_code == 200
+    # 메모를 만든 사람·폴더를 만든 사람·관리자는 넓힐 수 있다
+    assert c.put(f"/api/memos/{m}", json={"folder_id": wide}, headers=as_("a")).status_code == 200
+    assert m in shared_ids(c, "c")
+    assert c.put(f"/api/memos/{m}", json={"folder_id": None}, headers=as_("boss")).status_code == 200
+    # 자기가 만든 메모는 스스로 뺄 수 있다
+    mine = new(c, "b", "shared", "b의 메모", folder_id=rf)["id"]
+    assert c.put(f"/api/memos/{mine}", json={"folder_id": None}, headers=as_("b")).status_code == 200
+    # 접근 규칙이 좁아지는 이동(공개 -> 비공개)은 목록에 있는 누구나
+    pub = new(c, "a", "shared", "공개글")["id"]
+    assert c.put(f"/api/memos/{pub}", json={"folder_id": rf}, headers=as_("b")).status_code == 200

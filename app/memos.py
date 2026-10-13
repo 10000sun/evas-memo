@@ -115,6 +115,22 @@ def _insert(con, user, kind, title, category_id, body_text="", ydoc=None, folder
         raise HTTPException(400, "없는 분류입니다")
 
 
+def _no_widening(con, mid, memo, before, user):
+    """폴더 이동으로 이 메모를 볼 수 있는 사람이 늘면(비공개 -> 공개, 또는 새 목록에 새 사람이 있음) 메모를 만든 사람·옛/새
+    제한을 건 항목의 만든 사람·관리자만 할 수 있다. 목록에 있다는 이유만으로 공개 범위를 우회해 넓히지 못하게 하는 규칙으로,
+    share-with(만든 사람·관리자만)와 같은 수준이다. 쓰기 직후 같은 트랜잭션에서 판정하고, 막으면 예외로 롤백한다."""
+    after = ws.restrictor(con, con.execute(f"SELECT {ws.MEMO_ACCESS} FROM memos WHERE id=?", (mid,)).fetchone())
+
+    def audience(r):  # None = 모두
+        return None if r is None else ws.viewer_ids(con, r) | {r[2]}
+
+    old, new = audience(before), audience(after)
+    if old is not None and (new is None or not new <= old):
+        allowed = {memo["created_by"], before and before[2], after and after[2]}
+        if user["role"] != "admin" and user["id"] not in allowed:
+            raise HTTPException(403, "공개 범위를 넓히는 이동은 만든 사람과 관리자만 할 수 있습니다")
+
+
 @router.get("")
 def list_memos(kind: Kind, category_id: int | None = None, folder_id: str | None = None,
                q: str = "", user=Depends(current_user)):
@@ -171,6 +187,7 @@ async def edit_memo(mid: int, m: MemoEdit, bg: BackgroundTasks, user=Depends(cur
         if fields.get("folder_id") is not None:
             _check_folder(con, fields["folder_id"], memo["kind"], user)
         was_public = memo["kind"] == "shared" and _public(con, mid)
+        before = ws.restrictor(con, memo) if memo["kind"] == "shared" else None
         sets = "".join(f"{k}=?, " for k in fields)
         try:
             n = con.execute(f"UPDATE memos SET {sets}updated_by=?, updated_name=?, updated_at=? WHERE id=?{SAME}",
@@ -179,9 +196,13 @@ async def edit_memo(mid: int, m: MemoEdit, bg: BackgroundTasks, user=Depends(cur
             raise HTTPException(400, "없는 분류입니다")
         if not n:
             _changed(con, mid, user)
+        if memo["kind"] == "shared" and "folder_id" in fields:
+            _no_widening(con, mid, memo, before, user)
         out = _out(con, mid, user)
         if memo["kind"] == "shared":  # 폴더 이동으로 공개 여부가 바뀌면 그만큼만, 아니면 공개 메모의 수정만 기록
-            activity.publicity(con, mid, out["title"], was_public, _public(con, mid), user, bg, edit=True)
+            # '삭제' 줄에는 바꾸기 전 제목(마지막으로 공개돼 있던 제목)을 쓴다: 새 제목은 한 번도 공개된 적이 없다
+            activity.publicity(con, mid, out["title"], was_public, _public(con, mid), user, bg, edit=True,
+                               old_title=memo["title"])
     if "folder_id" in fields:
         await ws.rooms.revoke(4404, ws.GONE_REASON, memo_id=mid)  # 새 폴더 목록에 없는 접속자는 닫는다
     return out
