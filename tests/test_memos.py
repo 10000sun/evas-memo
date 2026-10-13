@@ -110,27 +110,29 @@ def test_share_moves_personal_to_shared(c):
 def test_copy_to_personal_leaves_original(c):
     o = new(c, "a", "shared", title="회의", category_id=3)
     append_body(o["id"], "원본")
-    r = c.post(f"/api/memos/{o['id']}/copy-to-personal", headers=as_("v"))  # 보기 전용도 복사는 된다
+    # 보기 전용은 새 메모를 못 만드므로 복사도 못 한다
+    assert c.post(f"/api/memos/{o['id']}/copy-to-personal", headers=as_("v")).status_code == 403
+    r = c.post(f"/api/memos/{o['id']}/copy-to-personal", headers=as_("b"))
     assert r.status_code == 201, r.text
     cp = r.json()
     assert cp["id"] != o["id"]
     assert (cp["kind"], cp["owner_id"], cp["title"], cp["category_id"], cp["body_text"], cp["created_name"]) == \
-           ("personal", "v", "회의", 3, "원본", "v")
+           ("personal", "b", "회의", 3, "원본", "b")
     # 원본은 그대로
     orig = c.get(f"/api/memos/{o['id']}", headers=as_("a")).json()
     assert (orig["kind"], orig["owner_id"], orig["body_text"]) == ("shared", "a", "원본")
     # 복사본은 복사한 사람만
     for uid in ("a", "boss"):
         assert c.get(f"/api/memos/{cp['id']}", headers=as_(uid)).status_code in (403, 404)
-    assert cp["id"] in ids(c.get("/api/memos?kind=personal", headers=as_("v")))
+    assert cp["id"] in ids(c.get("/api/memos?kind=personal", headers=as_("b")))
     # 이후 원본을 고쳐도 복사본에 번지지 않는다
     append_body(o["id"], " 추가")
     c.put(f"/api/memos/{o['id']}", json=dict(title="회의2"), headers=as_("a"))
-    got = c.get(f"/api/memos/{cp['id']}", headers=as_("v")).json()
+    got = c.get(f"/api/memos/{cp['id']}", headers=as_("b")).json()
     assert (got["title"], got["body_text"]) == ("회의", "원본")
     assert ydoc_text(cp["id"]) == "원본" and ydoc_text(o["id"]) == "원본 추가"
     # 개인 메모는 복사 대상이 아니다
-    assert c.post(f"/api/memos/{cp['id']}/copy-to-personal", headers=as_("v")).status_code == 409
+    assert c.post(f"/api/memos/{cp['id']}/copy-to-personal", headers=as_("b")).status_code == 409
 
 
 def test_cannot_share_others_personal(c):
@@ -158,3 +160,12 @@ def test_search_matches_title_and_body(c):
     assert q(dict(kind="personal", q="회의"), uid="b") == []
     assert q(dict(kind="shared", category_id=1)) == [m2["id"]]
     assert q(dict(kind="shared")) == sorted([m1["id"], m2["id"]])
+
+
+def test_title_max_100(c):
+    assert new(c, "a", "shared", title="가" * 100)["title"] == "가" * 100
+    r = c.post("/api/memos", json=dict(kind="shared", title="가" * 101), headers=as_("a"))
+    assert r.status_code == 422 and "제목은 100자까지입니다" in r.text
+    m = new(c, "a", "personal")
+    r = c.put(f"/api/memos/{m['id']}", json=dict(title="가" * 101), headers=as_("a"))
+    assert r.status_code == 422 and "제목은 100자까지입니다" in r.text

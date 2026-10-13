@@ -1,5 +1,6 @@
 """실시간 편집 연결: 접근 제어, DB 저장·복원, 100,000자 제한, 보기 전용, 동시 입력 병합."""
 import queue
+import sqlite3
 import threading
 import time
 
@@ -307,3 +308,93 @@ def test_copy_includes_unsaved_edits_and_needs_access(c, monkeypatch):
             # 권한 없는 사람의 복사 요청은 남의 개인 메모를 저장시키지도 않는다
             assert c.post(f"/api/memos/{mine}/copy-to-personal", headers=as_("b")).status_code == 404
             assert body_in_db(mine) == ""
+
+
+def test_drop_ignores_edit_arriving_during_close(c, monkeypatch):
+    """삭제로 방을 내리는 중(접속자 닫는 사이)에 들어온 편집이 저장 타이머를 다시 걸어 같은 id의 새 메모를 덮지 않는다."""
+    monkeypatch.setattr(ws, "SAVE_DELAY", 1.0)
+    orig_close = ws._Channel.close
+
+    async def close_with_late_edit(self, code, reason=""):
+        self.room.ydoc.get("text", type=Text).insert(0, "늦은 편집")
+        await orig_close(self, code, reason)
+
+    monkeypatch.setattr(ws._Channel, "close", close_with_late_edit)
+    m = new(c, "a", "personal")["id"]
+    with c:
+        with connect(c, m, "a") as w:
+            p = Peer(w)
+            p.text += "옛 본문"
+            p.push()
+            p.pump()
+            assert c.delete(f"/api/memos/{m}", headers=as_("a")).status_code == 204
+            assert wait_closed(p) == 4404
+            with db.connect() as con:  # 같은 id를 다시 쓴 남의 새 메모
+                con.execute("INSERT INTO memos(id,kind,owner_id,title,created_by,created_at,updated_at) "
+                            "VALUES(?,'personal','b','새 메모','b','t','t')", (m,))
+            time.sleep(1.5)
+    assert body_in_db(m) == ""
+
+
+def test_stale_room_connection_is_closed(c):
+    m = new(c, "a", "shared")["id"]
+    with c:
+        with connect(c, m, "a") as w:
+            p = Peer(w)
+
+            async def swap():  # 연결이 붙은 방이 내려가고 같은 id로 새 방이 생긴 상황
+                old = ws.rooms.server.rooms.pop(str(m))
+                await ws.rooms.server.get_room(str(m))
+                return old
+
+            old = c.portal.call(swap)
+            p.text += "옛 방에"
+            p.push()
+            assert wait_closed(p) == 1012
+            c.portal.call(old.stop)
+            assert str(c.portal.call(lambda: ws.body(ws.rooms.get(m).ydoc))) == ""  # 새 방은 오염되지 않았다
+
+
+def test_save_retries_after_db_error(c, monkeypatch):
+    monkeypatch.setattr(ws, "SAVE_DELAY", 0.2)
+    m = new(c, "a", "shared")["id"]
+    orig, fail = db.connect, {"n": 0}
+
+    def flaky():  # 서버(이벤트 루프 스레드)의 다음 DB 접속 한 번만 실패시킨다
+        if fail["n"] and threading.current_thread() is not threading.main_thread():
+            fail["n"] -= 1
+            raise sqlite3.OperationalError("database is locked")
+        return orig()
+
+    monkeypatch.setattr(db, "connect", flaky)
+    with c:
+        with connect(c, m, "a") as w:
+            p = Peer(w)
+            fail["n"] = 1
+            p.text += "저장"
+            p.push()
+            assert wait_body(m, "저장", timeout=2) == "저장"  # 실패 뒤 다시 시도해 저장된다
+            assert fail["n"] == 0
+
+
+def test_shutdown_saves_all_rooms_even_if_one_closes_meanwhile(c, monkeypatch):
+    ms = [new(c, "a", "shared")["id"] for _ in range(3)]
+    orig = ws._Server.delete_room
+    raced = []
+
+    async def racing(self, *, name=None, room=None):
+        if not raced:  # 첫 방을 내리는 사이 두 번째 방의 마지막 연결이 끝나 스스로 정리된 상황
+            raced.append(1)
+            await orig(self, name=list(self.rooms)[1])
+        await orig(self, name=name, room=room)
+
+    with c:
+        async def open_and_edit():
+            for mid in ms:
+                room = await ws.rooms.server.get_room(str(mid))
+                room.editor = {"id": "a", "name": "a"}
+                room.ydoc.get("text", type=Text).insert(0, f"본문{mid}")
+
+        c.portal.call(open_and_edit)
+        monkeypatch.setattr(ws._Server, "delete_room", racing)
+    assert [body_in_db(mid) for mid in ms] == [f"본문{mid}" for mid in ms]
