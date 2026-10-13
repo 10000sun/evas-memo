@@ -88,6 +88,9 @@ for (const [text, want] of [
   ["https://a.com/doc#제목", "https://a.com/doc#제목"],
   ["https://a.com/s?q=한글&page=2에서", "https://a.com/s?q=한글&page=2"],
   ["https://a.com/한글/abc 끝", "https://a.com/한글/abc"],
+  ["https://www.naver.com/에서 봐요", "https://www.naver.com/"], // 호스트 뒤 / 하나뿐이면 한글은 문장
+  ["https://www.naver.com/wiki/한글", "https://www.naver.com/wiki/한글"],
+  ["https://a.com/x에서~", "https://a.com/x"], // ~도 끝 문장부호
 ]) {
   assert.deepEqual(urlOf(text), [want], text);
   assert.equal(hrefOf(text), encodeURI(want).replace(/&/g, "&amp;"), text); // 미리보기 자동 링크도 같은 규칙
@@ -103,6 +106,17 @@ for (const text of ["https://a.com/" + ")".repeat(100000), "https://a.com/" + "(
   const r = performance.now() - t0;
   assert.ok(f < 1000 && r < 1000, `${text.slice(0, 20)}… findUrls ${f.toFixed(0)}ms, render ${r.toFixed(0)}ms`);
 }
+// 버려지는 주소 후보가 많은 긴 메모도 미리보기가 멈추지 않는다(토크나이저가 남은 글 전체를 훑지 않음)
+assert.equal(hrefOf("www.naver.com/에서"), "http://www.naver.com/");
+const timeRender = (t) => { const t0 = performance.now(); render(t); return performance.now() - t0; };
+for (const unit of ["https://. ", "https://, ", "https:// ", "www. "]) {
+  const ms = timeRender(unit.repeat(2e4));
+  assert.ok(ms < 1000, `${JSON.stringify(unit)}x2e4 render ${ms.toFixed(0)}ms`);
+}
+// 진짜 링크 2만 개는 jsdom의 DOMPurify가 <a> 2만 개를 만드는 데만 1초 안팎이 든다(브라우저는 훨씬 빠름).
+// 그래서 여기서는 선형인지(2배 입력에 3배 미만)만 본다
+const ms1 = timeRender("https://a.com/ ".repeat(1e4)), ms2 = timeRender("https://a.com/ ".repeat(2e4));
+assert.ok(ms2 < 3 * ms1 + 100 && ms2 < 5000, `링크 1e4 ${ms1.toFixed(0)}ms, 2e4 ${ms2.toFixed(0)}ms`);
 
 // 커서 색: 같은 색을 쓰는 3명이 서로의 상태를 보며 돌아가며 배정하면 모두 다른 색이 되고, 그 뒤로는 바뀌지 않는다
 const { assignDistinctColor } = createRequire(import.meta.url)("../static/color.js");

@@ -1,12 +1,19 @@
-import { EditorView, basicSetup } from "codemirror";
 import { EditorState, Prec, RangeSetBuilder } from "@codemirror/state";
-import { Decoration, ViewPlugin, WidgetType, keymap } from "@codemirror/view";
-import { indentLess, indentMore } from "@codemirror/commands";
+import {
+  EditorView, Decoration, ViewPlugin, WidgetType, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars,
+  drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightActiveLine,
+} from "@codemirror/view";
+import { defaultKeymap, indentLess, indentMore } from "@codemirror/commands";
+import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
+import { closeBrackets, autocompletion, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
+import { lintKeymap } from "@codemirror/lint";
 import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
 import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
-import { HighlightStyle, indentUnit, syntaxHighlighting, syntaxTree } from "@codemirror/language";
+import {
+  HighlightStyle, indentUnit, syntaxHighlighting, syntaxTree, foldGutter, indentOnInput, defaultHighlightStyle, bracketMatching, foldKeymap,
+} from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
 import { findUrls } from "./url-rule.mjs";
 
@@ -114,8 +121,16 @@ function enterOnEmptyItem(view) {
 }
 // markdown()의 Enter(이어쓰기)보다 먼저 돈다: 같은 Prec.high에서 확장 목록 앞쪽이 우선
 const tabKeys = Prec.high(keymap.of([{ key: "Tab", run: tab, shift: shiftTab }, { key: "Enter", run: enterOnEmptyItem }]));
-// 되돌리기는 Y.UndoManager(yCollab이 만든 것)로: 내 편집만 되돌린다. basicSetup의 history는 원격 편집까지 되돌린다
-const undoKeys = Prec.high(keymap.of(yUndoManagerKeymap));
+// codemirror의 basicSetup에서 history()·historyKeymap만 뺀 것. CodeMirror history는 원격 편집까지 기록해
+// 되돌리면 다른 사람의 글이 지워진다. 되돌리기는 yCollab의 Y.UndoManager(내 편집만)로: 키는 yUndoManagerKeymap,
+// 메뉴·모바일의 historyUndo/historyRedo(beforeinput)는 yCollab이 받는다
+const setup = [
+  lineNumbers(), highlightActiveLineGutter(), highlightSpecialChars(), foldGutter(), drawSelection(), dropCursor(),
+  EditorState.allowMultipleSelections.of(true), indentOnInput(), syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+  bracketMatching(), closeBrackets(), autocompletion(), rectangularSelection(), crosshairCursor(), highlightActiveLine(),
+  highlightSelectionMatches(),
+  keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...yUndoManagerKeymap, ...foldKeymap, ...completionKeymap, ...lintKeymap]),
+];
 
 // window.EvasEditor.create({parent, memoId, user:{name,color}}) -> {destroy(), view, awareness, provider}
 // provider: 화면이 연결 상태('status')·닫힘 코드('connection-close')·문서(provider.doc)를 본다
@@ -130,7 +145,7 @@ function create({ parent, memoId, user }) {
     parent,
     state: EditorState.create({
       doc: text.toString(),
-      extensions: [basicSetup, EditorView.lineWrapping, indentUnit.of("    "), undoKeys, tabKeys, markdown({ base: markdownLanguage }),
+      extensions: [setup, EditorView.lineWrapping, indentUnit.of("    "), tabKeys, markdown({ base: markdownLanguage }),
         syntaxHighlighting(mdHighlight), links, yCollab(text, provider.awareness)],
     }),
   });

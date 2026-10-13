@@ -1,6 +1,6 @@
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import { findUrls } from "./url-rule.mjs";
+import { urlAtStart } from "./url-rule.mjs";
 
 // window.EvasMarkdown.render(text) -> 무해화한 HTML 문자열. 미리보기는 다른 사람이 쓴 글이라 반드시 이것을 거친다
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
@@ -21,17 +21,16 @@ const OPTIONS = {
   SANITIZE_NAMED_PROPS: true, // id·name에 접두어를 붙여 앱의 id(e-meta 등)를 가로채지 못하게
 };
 
-// 그냥 적은 http(s) 주소는 에디터와 같은 규칙(url-rule.mjs)으로 링크한다. 그 밖(메일 등)은 marked 기본 자동 링크
+// 그냥 적은 http(s)·www. 주소는 에디터와 같은 규칙(url-rule.mjs)으로 링크한다. 그 밖(메일 등)은 marked 기본 자동 링크.
+// marked가 주소 후보마다 다시 부르므로 맨 앞에서 한 번만 맞춰 본다(남은 글 전체를 훑으면 긴 메모에서 제곱 시간)
 marked.use({
   tokenizer: {
     url(src) {
-      const www = /^www\./i.test(src); // www.로 시작하는 주소도 같은 규칙(http:// 붙여 판단)
-      if (!www && !/^https?:\/\//i.test(src)) return false;
-      const u = findUrls(www ? "http://" + src : src).next().value;
-      // 규칙상 주소가 아니면 링크하지 않는다(false를 돌려주면 marked 기본 규칙이 한글까지 다시 링크한다)
-      if (!u || u.from || (www && !/^http:\/\/www\.[^.]/i.test(u.url))) return;
-      const raw = www ? u.url.slice(7) : u.url;
-      return { type: "link", raw, text: raw, href: u.url, tokens: [{ type: "text", raw, text: raw }] };
+      if (!/^(?:https?:\/\/|www\.)/i.test(src)) return false;
+      const raw = urlAtStart(src);
+      if (!raw) return; // 규칙상 주소가 아니면 링크하지 않는다(false를 돌려주면 marked 기본 규칙이 한글까지 다시 링크한다)
+      const href = /^www\./i.test(raw) ? "http://" + raw : raw;
+      return { type: "link", raw, text: raw, href, tokens: [{ type: "text", raw, text: raw }] };
     },
   },
 });
