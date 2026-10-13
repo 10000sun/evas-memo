@@ -18,7 +18,9 @@ const MemoLink = (() => {
     for (const m of pres.length ? text.matchAll(TAG) : []) {
       const hit = pres.find(([, p]) => m[2].startsWith(p) && /^\d+$/.test(m[2].slice(p.length)));
       if (!hit) continue;
-      out.push(text.slice(last, m.index), { kind: hit[0], id: m[2].slice(hit[1].length), title: m[1].replace(/\\(.)/g, "$1"), url: m[2] });
+      // id는 앞의 0을 뗀다(?memo=007 도 7번): 서버 조회 결과(숫자)와 맞춰야 '삭제됨'으로 잘못 보이지 않는다
+      const id = m[2].slice(hit[1].length).replace(/^0+(?=\d)/, "");
+      out.push(text.slice(last, m.index), { kind: hit[0], id, title: m[1].replace(/\\(.)/g, "$1"), url: m[2] });
       last = m.index + m[0].length;
     }
     out.push(text.slice(last));

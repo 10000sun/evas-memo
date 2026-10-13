@@ -42,6 +42,14 @@ test("앱 주소로 정확히 시작하고 ?<종류>=<숫자>인 것만 링크",
   assert.strictEqual(links(`[t](${MEMO}/?memo=7)`).length, 0); // @ 없는 링크는 태그가 아니다
 });
 
+test("id 앞의 0은 떼어 서버 id와 맞춘다(0 하나는 그대로)", () => {
+  assert.strictEqual(links(`[@t](${MEMO}/?memo=007)`)[0].id, "7");
+  assert.strictEqual(links(`[@t](${CAL}/?event=0042)`)[0].id, "42");
+  assert.strictEqual(links(`[@t](${MEMO}/?memo=0)`)[0].id, "0");
+  assert.strictEqual(links(`[@t](${MEMO}/?memo=000)`)[0].id, "0");
+  assert.strictEqual(links(`[@t](${MEMO}/?memo=12345678901234567890)`)[0].id, "12345678901234567890"); // 큰 수도 글자 그대로(정밀도 손실 없음)
+});
+
 test("앱 주소가 http(s)가 아니면 그 종류는 링크로 보지 않는다", () => {
   for (const base of ["", null, undefined, "javascript:alert(1)", "memo.example.com", "https://a b"]) {
     assert.strictEqual(M.base(base), "");

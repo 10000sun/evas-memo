@@ -5,7 +5,9 @@ import {
 } from "@codemirror/view";
 import { defaultKeymap, indentLess, indentMore } from "@codemirror/commands";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
-import { closeBrackets, autocompletion, closeBracketsKeymap, completionKeymap, completionStatus } from "@codemirror/autocomplete";
+import {
+  closeBrackets, autocompletion, closeBracketsKeymap, completionKeymap, completionStatus, closeCompletion, selectedCompletion,
+} from "@codemirror/autocomplete";
 import { lintKeymap } from "@codemirror/lint";
 import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
@@ -161,8 +163,8 @@ function atCompletions(linkSource, undo) {
       const section = { name, rank };
       try {
         return (await linkSource(kind, q)).map((r) => ({ label: r.title, detail: r.detail, section, apply: insert(r.text) }));
-      } catch { // 상대 서버가 꺼져 있어도 입력은 그대로: 안내 한 줄만(골라도 아무것도 넣지 않는다)
-        return [{ label: "연결할 수 없습니다", section, apply: () => {} }];
+      } catch { // 상대 서버가 꺼져 있어도 입력은 그대로: 안내 한 줄만. 누르면 목록만 닫고, Enter는 failGuard가 본문으로 돌려준다
+        return [{ label: "연결할 수 없습니다", section, failed: true, apply: (view) => closeCompletion(view) }];
       }
     }));
     const options = groups.flat();
@@ -172,6 +174,12 @@ function atCompletions(linkSource, undo) {
 // 힌트 목록은 커서 위쪽에만 뜬다(사용자 요구). CodeMirror는 위가 모자라면 아래로 뒤집으므로 툴팁이 쓸 공간을 커서 줄 아래 끝까지로
 // 묶어 뒤집히지 않게 하고(위가 모자라면 목록이 줄어 안에서 스크롤), 목록이 처음 뜰 때 커서가 화면 맨 위 근처면 페이지를 올려 공간을 만든다
 const ROOM = 240;
+// 안내 행("연결할 수 없습니다")이 골라진 채 Enter를 누르면 목록만 닫고 Enter는 그대로 본문에(줄바꿈·목록 이어쓰기) 넘긴다.
+// 자동완성의 Enter(acceptCompletion, 같은 Prec.highest)보다 먼저 돌도록 확장 목록에서 setup보다 앞에 둔다
+const failGuard = Prec.highest(keymap.of([{
+  key: "Enter",
+  run: (view) => { if (selectedCompletion(view.state)?.failed) closeCompletion(view); return false; },
+}]));
 const hintsAbove = [
   tooltips({
     tooltipSpace: (view) => {
@@ -204,7 +212,7 @@ function create({ parent, memoId, user, linkSource }) {
     parent,
     state: EditorState.create({
       doc: text.toString(),
-      extensions: [setup, EditorView.lineWrapping, indentUnit.of("    "), tabKeys, markdown({ base: markdownLanguage }),
+      extensions: [atSource ? failGuard : [], setup, EditorView.lineWrapping, indentUnit.of("    "), tabKeys, markdown({ base: markdownLanguage }),
         syntaxHighlighting(mdHighlight), links, yCollab(text, provider.awareness, { undoManager }),
         atSource ? [EditorState.languageData.of(() => [{ autocomplete: atSource }]), hintsAbove] : []],
     }),

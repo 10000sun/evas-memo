@@ -64,6 +64,7 @@ def test_link_hints_above_cursor_and_text_only(client):
     bundle = client.get("/vendor/editor.bundle.js").text
     fail = "".join(f"\\u{ord(c):04X}" if ord(c) > 127 else c for c in "연결할 수 없습니다")
     assert "aboveCursor:!0" in bundle and fail in bundle  # 힌트는 커서 위쪽, 실패는 한 줄 안내(esbuild가 한글을 \uXXXX로 쓴다)
+    assert "failed:!0" in bundle  # 실패 안내 행은 표시만: Enter는 본문으로 넘긴다(failGuard, 동작은 브라우저 수동 확인)
     app_js = client.get("/app.js").text
     # 화면에서 HTML로 넣는 곳은 무해화한 미리보기 하나뿐(제목·칩·힌트는 textContent)
     assert app_js.count("innerHTML") == 1 and "EvasMarkdown.render" in app_js
