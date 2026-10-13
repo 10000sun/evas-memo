@@ -17,7 +17,7 @@
 </head>
 <body>
 <header class="top">
-  <div class="brand"><img src="icons/icon-192.png" alt="" width="30" height="30"><h1>에바스 메모</h1></div>
+  <div class="brand"><img src="icons/icon-192.png" alt="" width="30" height="30"><nav class="apps" aria-label="앱 전환"><span id="apps-other" class="apps-other" hidden><a id="to-cal">에바스 캘린더</a><span aria-hidden="true">|</span></span><h1><span aria-current="page">에바스 메모</span></h1></nav></div>
   <div class="tools">
     <span id="who" class="who"></span>
     <a id="admin-link" class="btn ghost" href="admin.html" hidden>관리</a>
@@ -43,6 +43,13 @@
     <button type="button" data-tab="personal" aria-pressed="false">개인</button>
     <button type="button" data-tab="shared" aria-pressed="false">공동</button>
   </div>
+  <div id="folders" class="folders" role="group" aria-label="폴더"></div>
+  <div id="subfolders" class="folders sub" role="group" aria-label="하위 폴더" hidden></div>
+  <div id="folder-tools" class="folder-tools" hidden>
+    <span id="folder-name" class="meta"></span>
+    <button type="button" id="f-rename" class="btn ghost">이름 바꾸기</button>
+    <button type="button" id="f-delete" class="btn danger">폴더 삭제</button>
+  </div>
   <div id="legend" class="legend" aria-label="분류 필터"></div>
   <input id="search" type="search" class="search" placeholder="제목·본문 검색" aria-label="메모 검색" autocomplete="off">
   <ul id="memos" class="memo-list"></ul>
@@ -57,12 +64,14 @@
   <input id="e-title" class="e-title" maxlength="100" placeholder="제목" aria-label="제목">
   <div class="e-row">
     <label class="inline">분류 <select id="e-cat"></select></label>
+    <label class="inline">폴더 <select id="e-folder"></select></label>
     <span id="e-peers" class="meta"></span>
     <div class="tabs e-mode" role="group" aria-label="보기 방식">
       <button type="button" data-mode="edit" aria-pressed="true">편집</button>
       <button type="button" data-mode="preview" aria-pressed="false">미리보기</button>
     </div>
   </div>
+  <nav id="e-links" class="e-links" aria-label="연결된 일정·메모" hidden></nav>
   <div id="e-body" class="e-body"></div>
   <div id="e-preview" class="e-preview" hidden></div>
   <p id="e-meta" class="meta"></p>
@@ -85,6 +94,9 @@
     <li>메모를 누르면 편집 화면이 열립니다. 본문은 치는 대로 저장되고, 같은 메모를 연 사람의 커서와 이름이 사람마다 다른 색으로 보입니다.</li>
     <li>본문은 마크다운(<code># 제목</code>, <code>**굵게**</code>, <code>- [ ] 할 일</code>, 표 등)으로 쓸 수 있고, 오른쪽 위 <b>미리보기</b>를 누르면 꾸며진 모양으로 봅니다.</li>
     <li>본문 속 주소 뒤의 <b>↗</b>를 누르면 새 탭으로 열립니다(PC는 Ctrl+클릭도 됩니다). 목록·인용 줄에서 Enter를 누르면 표시(번호는 +1)가 이어지고, 표시만 있는 줄에서 다시 Enter를 누르면 목록이 끝납니다. 본문에서 Tab은 띄어쓰기 4칸(빈 목록 줄에서는 하위 목록)이고, 키보드로 본문을 벗어나려면 Esc를 누른 뒤 Tab을 누릅니다.</li>
+    <li>목록 위 <b>폴더</b> 줄에서 폴더를 고르면 그 폴더의 메모만 보입니다(<b>폴더 없음</b>은 폴더에 넣지 않은 메모). <b>+ 새 폴더</b>로 폴더를 만들고, 폴더를 고른 뒤 한 번 더 <b>+ 새 폴더</b>를 누르면 그 안에 하위 폴더(한 단계까지)를 만듭니다. 고른 폴더는 이름을 바꾸거나 지울 수 있고, 지워도 안의 메모는 '폴더 없음'으로 남습니다. 개인 폴더는 나만 보고, 공동 폴더는 모두가 봅니다(공동 폴더 삭제는 만든 사람과 관리자만).</li>
+    <li>메모를 폴더에 넣거나 옮기려면 편집 화면의 <b>폴더</b>에서 고릅니다.</li>
+    <li>본문에서 <code>@</code>와 글자를 치면 커서 위쪽에 캘린더 <b>일정</b>과 다른 <b>메모</b>가 뜹니다. 고르면 <code>[@제목](주소)</code> 링크가 들어가고, 본문 위 연결 칩을 누르면 그 일정·메모로 바로 갑니다(지워진 것은 '삭제됨'). 공동 메모에서는 공동 메모만, 개인 메모에서는 내 개인 메모도 고를 수 있습니다. 맨 위 <b>에바스 캘린더</b>를 누르면 캘린더로 갑니다.</li>
     <li>위쪽 분류 이름을 누르면 그 분류 메모만 보입니다. 다시 누르면 풀립니다. 검색칸은 제목과 본문을 찾습니다.</li>
     <li>개인 메모의 <b>공동으로 옮기기</b>는 메모를 공동으로 옮깁니다(개인 쪽에는 남지 않음). 공동 메모의 <b>개인으로 복사</b>는 내 개인 메모로 사본을 만듭니다(원본은 그대로).</li>
     <li>다른 사람이 바꾼 목록은 20초마다 자동으로 반영되고, 바로 보려면 새로고침 버튼을 누릅니다.</li>
@@ -127,6 +139,7 @@
 
 <script src="vendor/editor.bundle.js"></script>
 <script src="vendor/markdown.bundle.js"></script>
+<script src="memolink.js"></script>
 <script src="common.js"></script>
 <script src="color.js"></script>
 <script src="notify.js"></script>

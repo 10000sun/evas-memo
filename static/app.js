@@ -2,10 +2,60 @@
 let cats = [], me = null, memos = [], shown = new Set(); // shown: 범례에서 고른 분류(비어 있으면 전체)
 let tab = "shared", cur = null, ed = null, openReq = 0, titleTimer = null, deleting = false, focusTitle = false;
 try { tab = localStorage.getItem("tab") || tab; } catch { /* 저장이 막혀 있으면 공동 탭부터 */ }
+// 메모 종류별 화면 규칙. 종류가 늘면 여기에 항목 하나를 더한다. 화면의 종류별 판단은 모두 이 표만 본다(서버 규칙과 같게).
+// 함수는 (me[, 폴더]) -> bool. scope: 그 종류 본문의 @ 힌트가 부르는 /api/link/memos 범위,
+// lookup: 그 종류 본문의 연결 칩이 메모 최신 제목을 물을 때의 범위(내 개인 메모 링크는 어디 있든 내게는 제목이 보인다)
+const editor = (u) => !!u && u.role !== "viewer";
+const yes = () => true, no = () => false;
+const KINDS = {
+  personal: {
+    name: "개인 메모", empty: "개인 메모가 없습니다. + 메모로 새로 만드세요.", scope: "all", lookup: "all",
+    accent: false, // 편집 화면 종류 표시를 강조색으로
+    author: true, // 메모 카드에 마지막 수정한 사람 표시
+    visible: yes, // 탭을 보일지
+    create: editor, // 새 메모(서버 add_memo: 편집자 이상)
+    edit: yes, // 제목·분류·폴더·본문 편집(서버 ws.can_edit: 개인은 본인만 보이므로 본인)
+    folderCreate: yes, // 폴더 만들기·이름 바꾸기(개인 폴더는 본인 것만 보인다)
+    folderDelete: yes,
+    toShared: editor, // 편집 화면 '공동으로 옮기기'(서버: 편집자 이상)
+    toPersonal: no, // '개인으로 복사'
+    del: yes, // 삭제 버튼
+    delConfirm: "이 메모를 삭제할까요?\n되돌릴 수 없습니다.",
+    inRev: false, // /api/activity의 rev에 변경이 잡히는지(안 잡히면 20초마다 목록을 다시 받는다)
+  },
+  shared: {
+    name: "공동 메모", empty: "공동 메모가 없습니다.", scope: "shared", lookup: "all",
+    accent: true, author: true, visible: yes, create: editor, edit: editor, folderCreate: editor,
+    folderDelete: (u, f) => f.created_by === u.id || u.role === "admin", // 만든 사람·관리자
+    toShared: no, toPersonal: yes,
+    del: editor, // 작성자·관리자만 지워진다: 편집자에게는 보이고 아니면 서버가 이유를 알려준다
+    delConfirm: "이 공동 메모를 삭제할까요?\n모든 사람에게서 사라지고 되돌릴 수 없습니다.",
+    inRev: true,
+  },
+};
+let conf = {}; // /api/config: 앱 주소들(memo_url·calendar_url)과 캘린더 연동 켜짐(link)
+const linkBases = () => ({ event: conf.calendar_url, memo: conf.memo_url }); // MemoLink 종류별 앱 주소
+// 딥링크 /?memo=<id> -> #<id>(편집 화면). 새로고침해도 다시 뛰지 않게 쿼리는 지운다
+const deep = new URLSearchParams(location.search).get("memo");
+if (deep !== null) history.replaceState(null, "", location.pathname + (/^\d+$/.test(deep) ? "#" + deep : ""));
+if (!KINDS[tab]) tab = "shared";
 const saveTab = () => { try { localStorage.setItem("tab", tab); } catch { /* 이번 화면에서만 기억 */ } };
-const canEdit = () => me && me.role !== "viewer";
-const canEditMemo = (m) => m.kind === "personal" || canEdit(); // 서버 ws.can_edit와 같은 규칙
+// 탭(종류)이 바뀌면 폴더 선택은 처음(전체)부터
+function setTab(k) {
+  if (k !== tab) { tab = k; folders = []; fsel = ""; }
+  saveTab(); syncTabs();
+}
+const canEditMemo = (m) => KINDS[m.kind].edit(me); // 서버 ws.can_edit와 같은 규칙
 const catOf = (id) => cats.find((c) => c.id === id);
+// 폴더 권한은 KINDS의 folderCreate·folderDelete(서버 folders.py와 같은 규칙)
+let folders = [], fsel = ""; // folders: 지금 종류의 폴더들. fsel: "" 전체, "none" 폴더 없음, 숫자 = 폴더 id
+const canFolder = (kind) => KINDS[kind].folderCreate(me);
+const canDelFolder = (f) => KINDS[f.kind].folderDelete(me, f);
+const folderOf = (id) => folders.find((f) => f.id === id);
+const folderPath = (id) => {
+  const f = folderOf(id), p = f && f.parent_id && folderOf(f.parent_id);
+  return !f ? "" : p ? `${p.name} / ${f.name}` : f.name;
+};
 // 서버는 시간대 없는 서버 현지 시각(한국)으로 저장한다 -> 그대로 현지 시각으로 읽는다
 const when = (iso) => new Date(iso).toLocaleString("ko-KR", { dateStyle: "medium", timeStyle: "short" });
 const el = (tag, props = {}, ...kids) => {
@@ -33,8 +83,10 @@ async function refreshList() {
   if (cur) return refreshCur();
   if ($("list-view").hidden) return;
   const n = ++listReq, q = $("search").value.trim(); // n: 늦게 온 옛 응답이 새 결과를 덮지 않게
+  await refreshFolders(); // 보고 있던 폴더가 사라졌으면 여기서 전체로 돌아간다
+  if (n !== listReq) return;
   let rows;
-  try { rows = await api(`/api/memos?kind=${tab}` + (q ? "&q=" + encodeURIComponent(q) : "")); }
+  try { rows = await api(`/api/memos?kind=${tab}` + (fsel !== "" ? "&folder_id=" + fsel : "") + (q ? "&q=" + encodeURIComponent(q) : "")); }
   catch (e) { if (n === listReq) toast("목록을 불러오지 못했습니다: " + e.message); return; }
   if (n !== listReq) return;
   memos = rows;
@@ -46,25 +98,105 @@ function card(m) {
   const a = el("a", { href: "#" + m.id, className: "memo" },
     el("strong", { textContent: m.title || "제목 없음" }),
     el("p", { className: "preview", textContent: m.body_text }),
+    ...(folderPath(m.folder_id) ? [el("div", { className: "meta path", textContent: folderPath(m.folder_id) })] : []),
     el("div", { className: "meta" },
       ...(c ? [el("i", { className: "dot", style: `background:${c.color}` }), c.name + " · "] : []),
-      `${m.updated_name || "알 수 없음"} · ${when(m.updated_at)}`));
+      (KINDS[m.kind].author ? `${m.updated_name || "알 수 없음"} · ` : "") + when(m.updated_at)));
   if (c) a.style.borderLeftColor = c.color;
   return el("li", {}, a);
 }
 
 function renderList() {
   const list = memos.filter((m) => !shown.size || shown.has(m.category_id));
-  const empty = shown.size || $("search").value.trim() ? "조건에 맞는 메모가 없습니다"
-    : tab === "personal" ? "개인 메모가 없습니다. + 메모로 새로 만드세요." : "공동 메모가 없습니다.";
+  const empty = shown.size || $("search").value.trim() || fsel !== "" ? "조건에 맞는 메모가 없습니다" : KINDS[tab].empty;
   $("memos").replaceChildren(...(list.length ? list.map(card) : [el("li", { className: "empty", textContent: empty })]));
+}
+
+// --- 폴더 ---
+let folderReq = 0;
+// 지금 종류의 폴더를 다시 받는다. 보던 폴더가 다른 곳에서 지워졌으면 전체로 돌리고 true
+async function refreshFolders() {
+  const kind = tab, n = ++folderReq; // 편집 중에는 tab이 열린 메모의 종류다
+  let rows;
+  try { rows = await api(`/api/folders?kind=${kind}`); } catch { return false; } // 다음 주기에 다시
+  if (n !== folderReq || kind !== tab) return false;
+  folders = rows;
+  const gone = typeof fsel === "number" && !folderOf(fsel);
+  if (gone) fsel = "";
+  paintFolders();
+  return gone;
+}
+function folderBtn(label, pressed, onclick, cls = "") {
+  const b = el("button", { type: "button", className: cls, textContent: label, onclick });
+  if (pressed != null) b.setAttribute("aria-pressed", pressed);
+  return b;
+}
+function pickFolder(v) { fsel = v; paintFolders(); memos = []; renderList(); refreshList(); }
+function paintFolders() {
+  const sel = typeof fsel === "number" ? folderOf(fsel) : null;
+  const root = sel && (sel.parent_id ? folderOf(sel.parent_id) : sel); // 고른 폴더의 맨 위 폴더
+  const make = canFolder(tab);
+  $("folders").replaceChildren(
+    folderBtn("전체", fsel === "", () => pickFolder("")),
+    folderBtn("폴더 없음", fsel === "none", () => pickFolder("none")),
+    ...folders.filter((f) => !f.parent_id).map((f) => folderBtn(f.name, f === root, () => pickFolder(f.id))),
+    ...(make ? [folderBtn("+ 새 폴더", null, () => newFolder(null), "add")] : []));
+  // 맨 위 폴더를 고르면 그 하위 폴더 줄. 하위 폴더 아래로는 만들 수 없어 하위 폴더를 고른 동안에는 + 새 폴더가 없다
+  const subs = root ? folders.filter((f) => f.parent_id === root.id) : [];
+  const subAdd = make && sel === root && sel;
+  $("subfolders").replaceChildren(...subs.map((f) => folderBtn(f.name, f === sel, () => pickFolder(f.id))),
+    ...(subAdd ? [folderBtn("+ 새 폴더", null, () => newFolder(root.id), "add")] : []));
+  $("subfolders").hidden = !subs.length && !subAdd;
+  $("folder-tools").hidden = !sel;
+  if (sel) {
+    $("folder-name").textContent = folderPath(sel.id);
+    $("f-rename").hidden = !canFolder(sel.kind);
+    $("f-delete").hidden = !canDelFolder(sel);
+  }
+  if (cur) paintFolderSelect();
+}
+async function newFolder(parentId) {
+  const name = prompt(parentId ? `'${folderOf(parentId).name}' 안에 만들 하위 폴더 이름 (30자까지)` : "새 폴더 이름 (30자까지)");
+  if (!name || !name.trim()) return;
+  try {
+    const f = await api("/api/folders", { method: "POST", body: JSON.stringify({ kind: tab, name, parent_id: parentId }) });
+    pickFolder(f.id);
+  } catch (e) { toast(e.message); refreshList(); }
+}
+$("f-rename").onclick = async () => {
+  const f = folderOf(fsel), name = f && prompt("폴더 이름 (30자까지)", f.name);
+  if (!name || !name.trim() || name.trim() === f.name) return;
+  try { await api(`/api/folders/${f.id}`, { method: "PUT", body: JSON.stringify({ name }) }); }
+  catch (e) { toast(e.message); }
+  refreshList();
+};
+$("f-delete").onclick = async () => {
+  const f = folderOf(fsel);
+  if (!f || !confirm(`'${folderPath(f.id)}' 폴더를 삭제할까요?\n${f.parent_id ? "" : "하위 폴더도 함께 삭제됩니다. "}안의 메모는 '폴더 없음'으로 남습니다.`)) return;
+  try { await api(`/api/folders/${f.id}`, { method: "DELETE" }); toast("폴더를 삭제했습니다"); fsel = ""; }
+  catch (e) { toast(e.message); }
+  refreshList();
+};
+// 편집 화면의 폴더 선택: 메모와 같은 종류의 폴더만, 하위 폴더는 들여쓰기
+// 항목이 바뀐 때만 다시 만든다(20초 갱신이 열려 있는 드롭다운을 닫지 않게)
+function paintFolderSelect() {
+  const items = [["", "폴더 없음"]];
+  for (const f of folders.filter((x) => !x.parent_id)) {
+    items.push([String(f.id), f.name]);
+    for (const s of folders.filter((x) => x.parent_id === f.id)) items.push([String(s.id), "  └ " + s.name]);
+  }
+  const sel = $("e-folder"), now = [...sel.options].map((o) => [o.value, o.text]);
+  if (JSON.stringify(now) !== JSON.stringify(items)) sel.replaceChildren(...items.map(([v, t]) => new Option(t, v)));
+  const v = String(cur.folder_id ?? "");
+  if (sel.value !== v) sel.value = v;
 }
 
 function syncTabs() {
   for (const b of document.querySelectorAll("[data-tab]")) b.setAttribute("aria-pressed", b.dataset.tab === tab);
+  if (me) $("add").hidden = !KINDS[tab].create(me); // 편집 중에는 tab이 열린 메모의 종류
 }
 for (const b of document.querySelectorAll("[data-tab]")) b.onclick = () => {
-  tab = b.dataset.tab; saveTab(); syncTabs(); memos = []; renderList(); refreshList();
+  setTab(b.dataset.tab); memos = []; paintFolders(); renderList(); refreshList();
 };
 let searchTimer;
 $("search").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(refreshList, 250); };
@@ -72,7 +204,8 @@ $("search").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeou
 $("add").onclick = async () => {
   try {
     const m = await api("/api/memos", { method: "POST", body: JSON.stringify({
-      kind: cur ? cur.kind : tab, category_id: shown.size === 1 ? [...shown][0] : null }) }); // 분류 하나로 거르고 있으면 그 분류로
+      kind: cur ? cur.kind : tab, category_id: shown.size === 1 ? [...shown][0] : null, // 분류 하나로 거르고 있으면 그 분류로
+      folder_id: !cur && typeof fsel === "number" ? fsel : null }) }); // 목록에서 폴더를 보고 있으면 그 폴더에
     focusTitle = true;
     location.hash = m.id;
   } catch (e) { toast(e.message); }
@@ -95,29 +228,93 @@ async function saveTitle(keepalive) {
 }
 $("e-title").oninput = () => { status("저장 중…"); clearTimeout(titleTimer); titleTimer = setTimeout(saveTitle, 700); };
 $("e-cat").onchange = () => put({ category_id: $("e-cat").value ? +$("e-cat").value : null });
+$("e-folder").onchange = () => put({ folder_id: $("e-folder").value ? +$("e-folder").value : null }).then(refreshFolders);
 addEventListener("pagehide", () => saveTitle(true));
 
 function paintMemo() {
-  const m = cur, shared = m.kind === "shared";
-  $("e-kind").textContent = shared ? "공동 메모" : "개인 메모";
-  $("e-kind").classList.toggle("shared", shared);
-  $("e-move").hidden = shared || !canEdit(); // 공동으로 옮기기는 편집자 이상(서버 규칙)
-  $("e-copy").hidden = !shared;
-  $("e-del").hidden = shared && !canEdit(); // 공동 메모는 작성자·관리자만 지워진다: 아니면 서버가 이유를 알려준다
+  const m = cur, k = KINDS[m.kind];
+  $("e-kind").textContent = k.name;
+  $("e-kind").classList.toggle("shared", k.accent);
+  $("e-move").hidden = !k.toShared(me);
+  $("e-copy").hidden = !k.toPersonal(me);
+  $("e-del").hidden = !k.del(me);
   $("e-meta").textContent = `작성 ${m.created_name || "알 수 없음"} · 마지막 수정 ${m.updated_name || "알 수 없음"} (${when(m.updated_at)})`;
 }
 
 function fillForm() {
   if (!titleTimer && document.activeElement !== $("e-title")) $("e-title").value = cur.title;
   $("e-cat").value = cur.category_id ?? "";
+  paintFolderSelect();
   paintMemo();
 }
 
-// 20초 주기: 다른 사람이 바꾼 제목·분류를 편집 중인 화면에도 반영한다(본문은 실시간 연결이 맞춘다)
+// 20초 주기: 다른 사람이 바꾼 제목·분류·폴더를 편집 중인 화면에도 반영한다(본문은 실시간 연결이 맞춘다)
 async function refreshCur() {
   const id = cur.id;
+  refreshFolders();
+  paintChips("all"); // 칩의 제목·삭제 여부도 다시 묻는다
   try { const m = await api(`/api/memos/${id}`); if (cur && cur.id === id) { cur = m; fillForm(); } }
   catch { /* 지워졌으면 실시간 연결이 알려준다 */ }
+}
+
+// --- 일정·메모 연결 ---
+// 일정 날짜: 캘린더의 ISO 문자열 그대로(종일이면 날짜만)
+const eventDate = (r) => { const s = String(r.start || ""); return s.slice(0, 10) + (r.all_day || s.length < 16 ? "" : " " + s.slice(11, 16)); };
+// 에디터 @ 힌트의 목록. 일정은 캘린더 연동이 켜졌을 때만, 메모는 이 메모 종류의 범위에서 자기 자신을 빼고
+async function linkSource(kind, q) {
+  const m = cur, url = MemoLink.base(linkBases()[kind]);
+  if (!m || !url || (kind === "event" && !conf.link)) return [];
+  const qs = `q=${encodeURIComponent(q)}&limit=9`; // 9: 자기 자신을 빼도 8개
+  const rows = await api(kind === "event" ? `/api/link/events?${qs}` : `/api/link/memos?${qs}&scope=${KINDS[m.kind].scope}`);
+  if (!Array.isArray(rows)) throw new Error("응답 형식");
+  return rows.filter((r) => /^\d+$/.test(r?.id) && typeof r.title === "string" && !(kind === "memo" && r.id === m.id)).slice(0, 8)
+    .map((r) => ({ title: r.title || "제목 없음", detail: kind === "event" ? eventDate(r) : undefined,
+      text: MemoLink.make(r.title || "제목 없음", url, r.id, kind) }));
+}
+// 연결 칩 줄: 본문의 [@제목](일정·메모 주소) 링크를 중복 없이 모아 본문 위에 보인다. 제목은 글의 링크 텍스트를 먼저 쓰고
+// 서버 배치 조회(ids=)로 최신 제목·날짜·삭제 여부를 받아 고친다. linkInfo: "종류id" -> 행 | null(삭제됨) | undefined(조회 실패)
+const linkInfo = new Map();
+let chipTimer, chipSeq = 0;
+function paintChips(lookup = true) {
+  const seen = new Set(), found = [];
+  for (const x of MemoLink.parse(ed ? ed.view.state.doc.toString() : "", linkBases()))
+    if (typeof x !== "string" && !seen.has(x.kind + x.id)) { seen.add(x.kind + x.id); found.push(x); }
+  $("e-links").hidden = !found.length;
+  $("e-links").replaceChildren(...found.map((l) => {
+    const info = linkInfo.get(l.kind + l.id);
+    // 같은 탭 이동: 일정은 캘린더 주소, 메모는 이 앱 안 #번호
+    const a = el("a", { className: "chip", href: l.kind === "memo" ? "#" + l.id : l.url },
+      el("span", { className: "k", textContent: l.kind === "event" ? "일정" : "메모" }),
+      el("span", { className: "t", textContent: "@" + (info ? info.title || "제목 없음" : l.title) }));
+    a.dataset.kind = l.kind;
+    if (info && l.kind === "event") a.append(el("span", { className: "d", textContent: eventDate(info) }));
+    if (info === null) { a.classList.add("gone"); a.append(el("span", { className: "d", textContent: "삭제됨" })); }
+    return a;
+  }));
+  if (lookup) lookupLinks(found, lookup === "all");
+}
+// all: 이미 아는 것까지 다시 묻는다(20초 주기). 묻는 동안·실패하면 아는 값(처음이면 글의 제목)을 그대로 둔다
+async function lookupLinks(found, all) {
+  const seq = chipSeq, m = cur, want = { event: [], memo: [] };
+  for (const l of found) if (all || !linkInfo.has(l.kind + l.id)) want[l.kind].push(l.id);
+  for (const [kind, ids] of Object.entries(want)) {
+    if (seq !== chipSeq) return;
+    if (!ids.length || (kind === "event" && !conf.link)) continue;
+    for (const id of ids) if (!linkInfo.has(kind + id)) linkInfo.set(kind + id, undefined); // 묻는 중: 같은 것을 또 묻지 않게
+    const got = [];
+    try {
+      for (let i = 0; i < ids.length; i += 50) { // 메모 서버의 ids 상한(50)에 맞춰 나눠 묻는다
+        const part = ids.slice(i, i + 50).join(",");
+        const rows = await api(kind === "event" ? `/api/link/events?ids=${part}` : `/api/link/memos?scope=${KINDS[m.kind].lookup}&ids=${part}`);
+        if (!Array.isArray(rows)) throw new Error("응답 형식");
+        got.push(...rows);
+      }
+    } catch { continue; } // 실패는 조용히 무시, 다음 주기에 다시
+    if (seq !== chipSeq) return; // 그 사이 다른 메모로 갔다(위 반복 처음에도 확인)
+    const byId = new Map(got.filter((r) => typeof r?.title === "string").map((r) => [String(r.id), r]));
+    for (const id of ids) linkInfo.set(kind + id, byId.get(id) || null);
+    paintChips(false);
+  }
 }
 
 async function openMemo(id) {
@@ -125,14 +322,15 @@ async function openMemo(id) {
   let m;
   try { m = await api(`/api/memos/${id}`); } catch { if (n === openReq) leave("메모가 없거나 볼 수 없습니다"); return; }
   if (n !== openReq) return;
-  cur = m; tab = m.kind; saveTab(); syncTabs();
+  cur = m; setTab(m.kind);
   $("e-cat").replaceChildren(new Option("미분류", ""), ...cats.map((c) => new Option(c.name, c.id)));
   $("e-title").value = m.title;
   fillForm();
+  refreshFolders();
   const editable = canEditMemo(m);
-  $("e-title").disabled = $("e-cat").disabled = !editable;
+  $("e-title").disabled = $("e-cat").disabled = $("e-folder").disabled = !editable;
   $("e-body").inert = !editable; // 보기 전용: 서버가 편집을 버리므로 입력 자체를 막는다
-  ed = EvasEditor.create({ parent: $("e-body"), memoId: id, user: { name: me.name, color: colorOf(me.id) } });
+  ed = EvasEditor.create({ parent: $("e-body"), memoId: id, user: { name: me.name, color: colorOf(me.id) }, linkSource });
   watch(ed, id);
   if (focusTitle) $("e-title").focus();
   focusTitle = false;
@@ -147,6 +345,7 @@ function watch(e, id) {
   p.doc.on("update", (_u, origin) => {
     if (ed !== e) return;
     clearTimeout(previewTimer); previewTimer = setTimeout(renderPreview, 200);
+    clearTimeout(chipTimer); chipTimer = setTimeout(paintChips, 500);
     if (origin === p) return; // origin === p: 서버에서 받은 변경
     if (!p.wsconnected) return status("연결 끊김 · 다시 연결되면 저장됩니다");
     // 서버는 받은 편집을 2초 안에 저장한다(ws.SAVE_DELAY). 확인 응답은 없어 입력이 멎고 3초 뒤 저장됨으로 본다
@@ -174,7 +373,7 @@ function watch(e, id) {
     // 서버의 접속 거절(권한 없음·지워짐)은 브라우저에 1006으로만 보여 API로 확인한다
     fetch(`/api/memos/${id}`).then((r) => {
       if (ed !== e) return;
-      if (r.status === 401) location.href = "/auth/login";
+      if (r.status === 401) location.href = "/auth/login?next=" + encodeURIComponent("/?memo=" + id);
       else if (r.status === 404) leave("메모가 삭제되었거나 볼 수 없습니다");
     }, () => { /* 아직 오프라인 */ });
   });
@@ -186,7 +385,8 @@ async function closeMemo() {
   if (ed) { const e = ed; ed = null; e.destroy(); }
   cur = null; deleting = false;
   clearTimeout(previewTimer); setMode("edit");
-  $("e-body").replaceChildren(); $("e-preview").replaceChildren(); $("e-peers").textContent = ""; status("");
+  clearTimeout(chipTimer); chipSeq++; linkInfo.clear(); $("e-links").hidden = true;
+  $("e-body").replaceChildren(); $("e-preview").replaceChildren(); $("e-links").replaceChildren(); $("e-peers").textContent = ""; status("");
 }
 
 function leave(text) {
@@ -204,7 +404,7 @@ $("e-move").onclick = async () => {
   await saveTitle();
   try {
     cur = await api(`/api/memos/${cur.id}/share`, { method: "POST" });
-    tab = "shared"; saveTab(); syncTabs(); paintMemo();
+    setTab(cur.kind); fillForm(); refreshFolders(); // 옮기면 폴더는 '폴더 없음'(서버)
     toast("공동 메모로 옮겼습니다");
   } catch (e) { toast(e.message); }
 };
@@ -218,7 +418,7 @@ $("e-copy").onclick = async () => {
   } catch (e) { toast(e.message); }
 };
 $("e-del").onclick = async () => {
-  if (!confirm(cur.kind === "shared" ? "이 공동 메모를 삭제할까요?\n모든 사람에게서 사라지고 되돌릴 수 없습니다." : "이 메모를 삭제할까요?\n되돌릴 수 없습니다.")) return;
+  if (!confirm(KINDS[cur.kind].delConfirm)) return;
   clearTimeout(titleTimer); titleTimer = null; // 지울 메모의 제목은 저장하지 않는다
   deleting = true;
   try { await api(`/api/memos/${cur.id}`, { method: "DELETE" }); leave("삭제했습니다"); }
@@ -245,13 +445,16 @@ $("refresh").onclick = () => location.reload(); // 홈 화면에 설치한 앱�
 
 async function start() {
   try {
-    [me, cats] = await Promise.all([api("/api/me"), api("/api/categories")]);
+    [me, cats, conf] = await Promise.all([api("/api/me"), api("/api/categories"), api("/api/config").catch(() => ({}))]);
   } catch (e) {
     $("msg").hidden = false; $("msg").textContent = "불러오지 못했습니다: " + e.message;
     return;
   }
   initBell();
-  $("add").hidden = !canEdit();
+  // 앱 전환: 캘린더 주소가 http(s)로 설정돼 있을 때만 링크(같은 탭)
+  if (MemoLink.base(conf.calendar_url)) { $("to-cal").href = conf.calendar_url + "/"; $("apps-other").hidden = false; }
+  for (const b of document.querySelectorAll("[data-tab]")) b.hidden = !KINDS[b.dataset.tab].visible(me);
+  if (!KINDS[tab].visible(me)) setTab("shared");
   $("admin-link").hidden = me.role !== "admin";
   $("who").textContent = me.name;
   $("logout").hidden = false;

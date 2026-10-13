@@ -41,6 +41,12 @@ code { background: var(--bg); padding: 1px 6px; border-radius: 6px; font-size: .
 .brand { margin-right: auto; }
 .tools { order: 1; }
 #add { order: 2; }
+/* 앱 전환: 에바스 캘린더 | 에바스 메모(지금 앱은 진하게). 좁으면 줄을 바꾼다 */
+.apps { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; row-gap: 2px; min-width: 0; }
+.brand h1, .apps-other { white-space: nowrap; }
+.apps-other { display: inline-flex; gap: 8px; color: var(--muted); font-size: 1rem; }
+.apps-other a { color: var(--muted); font-weight: 500; text-decoration: none; }
+.apps-other a:hover { color: var(--text); text-decoration: underline; }
 .who { color: var(--muted); font-size: .85rem; max-width: 9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 버튼 */
@@ -67,6 +73,20 @@ code { background: var(--bg); padding: 1px 6px; border-radius: 6px; font-size: .
 .legend button.reset { color: var(--primary); font-weight: 600; border-color: var(--line); position: sticky; right: 0; background: var(--surface); } /* 좁은 화면에서 범례가 옆으로 밀려도 오른쪽에 붙어 보인다 */
 .legend i { width: 8px; height: 8px; border-radius: 50%; }
 @media (min-width: 700px) { .legend { flex-wrap: wrap; overflow: visible; } }
+
+/* 폴더 줄: 전체 · 폴더 없음 · 폴더들 · + 새 폴더. 하위 폴더 줄은 들여서 이어 붙인다 */
+.folders { display: flex; gap: 6px; overflow-x: auto; padding: 2px 0 8px; scrollbar-width: none; }
+.folders::-webkit-scrollbar { display: none; }
+.folders.sub { padding-left: 14px; border-left: 2px solid var(--line); margin-left: 6px; }
+.folders button { flex: none; max-width: 14em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-height: 32px; padding: 0 12px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: .85rem; cursor: pointer; }
+.folders button:hover { border-color: var(--muted); }
+.folders button[aria-pressed="true"] { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 12%, transparent); color: var(--primary); font-weight: 600; }
+.folders button.add { color: var(--primary); border-style: dashed; }
+.folder-tools { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0 0 8px; }
+.folder-tools .meta { font-size: .85rem; font-weight: 600; color: var(--text); margin-right: auto; overflow-wrap: anywhere; }
+@media (min-width: 700px) { .folders { flex-wrap: wrap; overflow: visible; } }
+.memo .path { color: var(--primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 카드·알림 */
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; margin-bottom: 16px; }
@@ -164,6 +184,23 @@ label.inline { flex-direction: row; align-items: center; gap: 8px; }
 .e-body .cm-url-open { display: inline-flex; align-items: center; justify-content: center; min-width: 1.5em; height: 1.4em; margin: 0 2px; padding: 0; vertical-align: baseline;
   border: 1px solid var(--line); border-radius: 5px; background: var(--bg); color: var(--primary); font: inherit; font-size: .8em; line-height: 1; cursor: pointer; }
 .e-body .cm-url-open:hover { border-color: var(--primary); }
+/* @ 태그 힌트(커서 위쪽 목록): 앱 색을 따른다 */
+.e-body .cm-tooltip { background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(10, 12, 24, .18); overflow: hidden; }
+.e-body .cm-tooltip-autocomplete > ul { font-family: inherit; max-height: 15em; max-width: min(420px, calc(100vw - 32px)); }
+.e-body .cm-tooltip-autocomplete > ul > li { padding: 6px 10px !important; overflow: hidden; text-overflow: ellipsis; }
+.e-body .cm-tooltip-autocomplete > ul > li[aria-selected] { background: color-mix(in srgb, var(--primary) 18%, transparent); color: var(--text); }
+.e-body .cm-tooltip-autocomplete completion-section { padding: 4px 10px; font-size: .75rem; font-weight: 700; color: var(--muted); border-bottom: 1px solid var(--line); }
+.e-body .cm-completionDetail { margin-left: .6em; font-style: normal; font-size: .8em; color: var(--muted); }
+/* 연결 칩 줄(본문 위): 누르면 그 일정·메모로 같은 탭 이동 */
+.e-links { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 10px; }
+.e-links .chip { display: inline-flex; align-items: baseline; gap: 6px; max-width: 100%; min-height: 30px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--bg); color: var(--text); font-size: .85rem; text-decoration: none; }
+.e-links .chip:hover { border-color: var(--primary); }
+.e-links .k { font-size: .72rem; font-weight: 700; color: var(--primary); flex: none; }
+.e-links .chip[data-kind="memo"] .k { color: var(--ok); }
+.e-links .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.e-links .d { font-size: .75rem; color: var(--muted); flex: none; }
+.e-links .chip.gone .t { text-decoration: line-through; color: var(--muted); }
 #edit-view .btns { flex-wrap: wrap; }
 .e-mode { margin: 0 0 0 auto; }
 .e-mode button { min-width: 0; }
@@ -203,5 +240,6 @@ label.inline { flex-direction: row; align-items: center; gap: 8px; }
   .who { display: none; } /* 둘째 줄에 아이콘이 7개까지 늘어나 자리가 모자란다 */
   .card { padding: 6px; border-radius: 12px; }
   .memo-list { grid-template-columns: 1fr; }
+  .folder-tools .meta { flex-basis: 100%; } /* 폴더 경로 한 줄, 버튼은 그 아래 한 줄 */
   dialog { padding: 18px; }
 }
