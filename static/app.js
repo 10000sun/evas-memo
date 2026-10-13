@@ -92,6 +92,14 @@ const status = (t) => ($("e-status").textContent = t);
 // 편집 | 미리보기. 미리보기는 무해화한 HTML(EvasMarkdown)이고 본문이 바뀌면(다른 사람 입력 포함) 잠깐 뒤 다시 그린다
 let mode = "edit", previewTimer;
 const renderPreview = () => { if (ed && mode === "preview") $("e-preview").innerHTML = EvasMarkdown.render(ed.view.state.doc.toString()); };
+// ||스포일러||: 눌러서(또는 Enter·Space) 보이고 다시 누르면 가린다. 가려진 동안 안의 링크는 열리지 않고 먼저 보이기만 한다
+const toggleSpoiler = (e) => {
+  const sp = e.target.closest?.(".md-spoiler");
+  if (!sp || (e.type === "keydown" && e.key !== "Enter" && e.key !== " ")) return;
+  if (sp.classList.contains("revealed") && e.target.closest("a")) return;
+  e.preventDefault(); sp.classList.toggle("revealed");
+};
+$("e-preview").addEventListener("click", toggleSpoiler); $("e-preview").addEventListener("keydown", toggleSpoiler);
 function setMode(m) {
   mode = m;
   for (const b of document.querySelectorAll("[data-mode]")) b.setAttribute("aria-pressed", b.dataset.mode === m);
