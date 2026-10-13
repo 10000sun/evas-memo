@@ -153,7 +153,7 @@ function watch(e, id) {
     if (code === 1009) {
       // 넘친 편집은 서버가 버렸다. 그대로 두면 다시 연결할 때마다 같은 편집을 보내 또 끊기므로 서버 내용으로 다시 연다
       toast("본문은 100,000자까지입니다. 넘친 입력은 저장되지 않았습니다");
-      return closeMemo().then(() => openMemo(id));
+      return route(); // 주소는 그대로라 같은 메모를 다시 연다
     }
     if (code === 1008 || code === 1003 || code >= 4000) return leave("이 메모를 볼 권한이 없습니다");
     // 그 밖(네트워크 끊김·서버 재시작)은 에디터가 알아서 다시 연결한다.
@@ -211,9 +211,13 @@ $("e-del").onclick = async () => {
 };
 
 // --- 화면 전환 ---
-async function route() {
-  const id = parseInt(location.hash.slice(1), 10);
+// 한 번에 하나씩 순서대로 처리한다: 제목 저장(네트워크)을 기다리는 사이 다음 전환이 끼어들면
+// 서로의 에디터를 닫거나 옛 주소의 메모를 여는 일이 생긴다. 주소는 닫기가 끝난 뒤에 읽는다
+let routing = Promise.resolve();
+const route = () => (routing = routing.then(routeNow, routeNow));
+async function routeNow() {
   await closeMemo();
+  const id = parseInt(location.hash.slice(1), 10);
   $("list-view").hidden = !!id; $("edit-view").hidden = !id;
   if (id) openMemo(id); else refreshList();
 }
