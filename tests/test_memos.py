@@ -63,8 +63,9 @@ def test_personal_memo_invisible_to_others(c):
 def test_shared_visible_and_editable_by_anyone(c):
     m = new(c, "a", "shared", title="공지")
     assert set(m) == {"id", "kind", "owner_id", "title", "category_id", "folder_id", "body_text",
-                      "created_name", "updated_name", "updated_at"}
-    assert m["kind"] == "shared" and m["created_name"] == "a" and m["body_text"] == ""
+                      "created_name", "updated_name", "updated_at",
+                      "visibility", "inherited", "can_share"}
+    assert m["kind"] == "shared" and m["visibility"] == "all" and m["created_name"] == "a" and m["body_text"] == ""
     u = f"/api/memos/{m['id']}"
     for uid in ("b", "boss", "v"):
         assert m["id"] in ids(c.get("/api/memos?kind=shared", headers=as_(uid)))

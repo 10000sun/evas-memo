@@ -29,7 +29,8 @@ ALTER TABLE memos ADD COLUMN folder_id INTEGER REFERENCES folders(id) ON DELETE 
 
 
 def snapshot(con):
-    return {t: [dict(r) for r in con.execute(f"SELECT * FROM {t} ORDER BY id")]
+    # 비공개 공유로 붙는 visibility 열(기본 'all')은 이 이전 테스트의 비교 대상이 아니다: test_db_migration_private가 본다
+    return {t: [{k: v for k, v in dict(r).items() if k != "visibility"} for r in con.execute(f"SELECT * FROM {t} ORDER BY id")]
             for t in ("categories", "memos", "folders", "activity")}
 
 
@@ -151,7 +152,7 @@ def test_main_schema_db_is_migrated(tmp_path, monkeypatch):
     db.init()
     with db.connect() as con:
         after = {r["id"]: dict(r) for r in con.execute("SELECT * FROM memos")}
-        assert after == {k: {**v, "folder_id": None} for k, v in before.items()}
+        assert after == {k: {**v, "folder_id": None, "visibility": "all"} for k, v in before.items()}
         assert [dict(r) for r in con.execute("SELECT kind, memo_id, title FROM activity")] == \
             [{"kind": "add", "memo_id": 3, "title": "메모3"}]
         assert seq(con, "memos") == 20
