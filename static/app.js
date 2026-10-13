@@ -96,9 +96,44 @@ function setMode(m) {
   mode = m;
   for (const b of document.querySelectorAll("[data-mode]")) b.setAttribute("aria-pressed", b.dataset.mode === m);
   $("e-body").hidden = m === "preview"; $("e-preview").hidden = m !== "preview";
-  renderPreview();
+  renderPreview(); showTools();
 }
 for (const b of document.querySelectorAll("[data-mode]")) b.onclick = () => setMode(b.dataset.mode);
+// 서식 툴바: 에디터가 준 명령 목록(ed.commands)으로 버튼을 만든다. mousedown을 막아 누르는 동안 에디터 선택·포커스를 지키고,
+// 실행 뒤 에디터로 포커스를 돌려준다. 보기 전용(본문 inert)·미리보기에서는 숨긴다
+const runTool = (name, arg) => { if (!ed) return; ed.exec(name, arg); ed.view.focus(); };
+const keepFocus = (b) => { b.onmousedown = (e) => e.preventDefault(); return b; };
+function closePalette() {
+  $("e-palette").hidden = true;
+  const c = $("e-tools").querySelector('[data-cmd="color"]');
+  if (c) c.setAttribute("aria-expanded", "false");
+}
+function showTools() {
+  $("e-tools").hidden = !ed || mode === "preview" || $("e-body").inert;
+  if ($("e-tools").hidden) closePalette();
+}
+function paintTools() {
+  const pal = $("e-palette");
+  pal.replaceChildren(); closePalette();
+  $("e-tools").replaceChildren(...(ed ? ed.commands : []).map((c) => {
+    const b = keepFocus(el("button", { type: "button", className: "e-tool", textContent: c.icon, title: c.label + (c.key ? ` (${c.key})` : "") }));
+    b.dataset.cmd = c.name; b.setAttribute("aria-label", c.label);
+    if (!c.colors) { b.onclick = () => runTool(c.name); return b; }
+    b.setAttribute("aria-expanded", "false"); b.setAttribute("aria-controls", "e-palette");
+    b.onclick = () => { pal.hidden = !pal.hidden; b.setAttribute("aria-expanded", String(!pal.hidden)); };
+    const sw = (name, label, cls) => {
+      const s = keepFocus(el("button", { type: "button", className: "e-swatch " + cls, textContent: name ? "A" : "✕", title: label }));
+      s.setAttribute("aria-label", label);
+      s.onclick = () => { closePalette(); runTool("color", name); };
+      return s;
+    };
+    pal.append(...c.colors.map((x) => sw(x.name, x.name, x.cls)), sw(null, "색 해제", "off"));
+    return b;
+  }));
+  showTools();
+}
+$("e-palette").onkeydown = (e) => { if (e.key === "Escape") { closePalette(); $("e-tools").querySelector('[data-cmd="color"]')?.focus(); } };
+document.addEventListener("mousedown", (e) => { if (!$("e-palette").hidden && !e.target.closest?.('#e-palette, [data-cmd="color"]')) closePalette(); });
 
 // --- 목록 ---
 let listReq = 0;
@@ -413,6 +448,7 @@ async function openMemo(id) {
   $("e-title").disabled = $("e-cat").disabled = $("e-folder").disabled = !editable;
   $("e-body").inert = !editable; // 보기 전용: 서버가 편집을 버리므로 입력 자체를 막는다
   ed = EvasEditor.create({ parent: $("e-body"), memoId: id, user: { name: me.name, color: colorOf(me.id) }, linkSource });
+  paintTools();
   watch(ed, id);
   if (focusTitle) $("e-title").focus();
   focusTitle = false;
@@ -469,6 +505,7 @@ async function closeMemo() {
   const blank = isBlank() ? cur.id : 0;
   if (cur && !blank) fresh.delete(cur.id); // 내용이 생긴 메모는 이후 비워도 자동으로 지우지 않는다
   if (ed) { const e = ed; ed = null; e.destroy(); }
+  paintTools();
   cur = null; deleting = false;
   if (blank) { fresh.delete(blank); try { await api(`/api/memos/${blank}`, { method: "DELETE" }); } catch { /* 이미 없거나 못 지우면 그대로 둔다 */ } }
   clearTimeout(previewTimer); setMode("edit");

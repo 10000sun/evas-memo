@@ -14,10 +14,12 @@ import { WebsocketProvider } from "y-websocket";
 import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import {
-  HighlightStyle, indentUnit, syntaxHighlighting, syntaxTree, foldGutter, indentOnInput, defaultHighlightStyle, bracketMatching, foldKeymap,
+  HighlightStyle, indentUnit, syntaxHighlighting, foldGutter, indentOnInput, defaultHighlightStyle, bracketMatching, foldKeymap,
 } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
 import { findUrls } from "./url-rule.mjs";
+import { liveMarkdown } from "./live-md.js";
+import { COMMANDS, formatting, inCode } from "./format.js";
 
 // 마크다운 입력 강조. 색은 style.css 변수를 써서 라이트·다크를 따라간다
 const mdHighlight = HighlightStyle.define([
@@ -80,11 +82,7 @@ const links = ViewPlugin.fromClass(class {
 // 번호 항목의 Shift+Tab(같은 단계 직전 번호 +1)만 맞춘다. 키보드로 에디터를 벗어나려면 Esc 뒤 Tab(CodeMirror 기본 동작)
 const EMPTY_ITEM = /^( *)(?:[-*+]|(\d+)([.)]))( +)(\[[ xX]\] +)?$/;
 const ORDERED = /^( *)(\d+)([.)])/;
-// 코드 블록(펜스·들여쓰기 코드) 안에서는 목록 규칙을 쓰지 않는다
-function inCode(state, pos) {
-  for (let n = syntaxTree(state).resolveInner(pos, -1); n; n = n.parent) if (n.name === "FencedCode" || n.name === "CodeBlock") return true;
-  return false;
-}
+// 코드 블록(펜스·들여쓰기 코드) 안에서는 목록 규칙을 쓰지 않는다(inCode: format.js)
 function tab(view) {
   const s = view.state, sel = s.selection.main;
   if (s.selection.ranges.some((r) => !r.empty)) return indentMore(view);
@@ -207,9 +205,11 @@ const hintsAbove = [
   }),
 ];
 
-// window.EvasEditor.create({parent, memoId, user:{name,color}, linkSource?}) -> {destroy(), view, awareness, provider}
-// provider: 화면이 연결 상태('status')·닫힘 코드('connection-close')·문서(provider.doc)를 본다. linkSource: 위 @ 태그 힌트
-function create({ parent, memoId, user, linkSource }) {
+// window.EvasEditor.create({parent, memoId, user:{name,color}, linkSource?, live?}) -> {destroy(), view, awareness, provider, exec, commands}
+// provider: 화면이 연결 상태('status')·닫힘 코드('connection-close')·문서(provider.doc)를 본다. linkSource: 위 @ 태그 힌트.
+// live(기본 true): 디스코드식 라이브 표시(live-md.js). exec(name, arg): 서식 명령,
+// commands: [{name, label, icon, key, colors?: [{name, cls}]}](툴바용. key는 보이는 단축키 글자, cls는 글자 색 클래스)
+function create({ parent, memoId, user, linkSource, live = true }) {
   const doc = new Y.Doc();
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   // y-websocket은 `${서버주소}/${방이름}`으로 접속한다 -> /ws/memos/{memoId}
@@ -219,12 +219,14 @@ function create({ parent, memoId, user, linkSource }) {
   const undoManager = new Y.UndoManager(text); // yCollab 기본과 같다(내 편집만 되돌림). 태그 넣기가 끊어 쓰려고 직접 만든다
   // 소스 함수는 한 번만 만든다: languageData가 부를 때마다 새 함수면 CodeMirror가 다른 소스로 보고 끝없이 다시 묻는다
   const atSource = linkSource && atCompletions(linkSource, undoManager);
+  const fmt = formatting({ undo: undoManager });
   const view = new EditorView({
     parent,
     state: EditorState.create({
       doc: text.toString(),
       extensions: [atSource ? failGuard : [], setup, EditorView.lineWrapping, indentUnit.of("    "), tabKeys, markdown({ base: markdownLanguage }),
-        syntaxHighlighting(mdHighlight), links, yCollab(text, provider.awareness, { undoManager }),
+        syntaxHighlighting(mdHighlight), links, live ? liveMarkdown({ linkWidget: (url) => new OpenLink(url), openUrl }) : [], fmt.extension,
+        yCollab(text, provider.awareness, { undoManager }),
         atSource ? [EditorState.languageData.of(() => [{ autocomplete: atSource }]), hintsAbove] : []],
     }),
   });
@@ -232,6 +234,8 @@ function create({ parent, memoId, user, linkSource }) {
     view,
     awareness: provider.awareness,
     provider,
+    exec: (name, arg) => fmt.exec(view, name, arg),
+    commands: COMMANDS.map(({ name, label, icon, key, colors }) => ({ name, label, icon, key, ...(colors ? { colors: colors.map((c) => ({ ...c })) } : {}) })),
     destroy() {
       view.destroy();
       provider.destroy();
