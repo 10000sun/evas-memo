@@ -138,6 +138,24 @@ label input, label select, label textarea { font-weight: 400; font-size: .95rem;
 .lock { margin-right: 4px; }
 .md-user, .chip.user { background: color-mix(in srgb, var(--primary) 14%, transparent); border-radius: 999px; padding: 0 8px; }
 .chip.user { cursor: default; text-decoration: none; }
+/* 미리보기 디스코드식 문법: 스포일러·작은 글씨·글자 색 */
+.e-preview .md-spoiler { background: color-mix(in srgb, var(--muted) 22%, transparent); border-radius: 4px; padding: 0 3px; cursor: pointer; }
+.e-preview .md-spoiler:not(.revealed) { background: var(--text); }
+.e-preview .md-spoiler:not(.revealed), .e-preview .md-spoiler:not(.revealed) * { color: transparent; }
+.e-preview .md-sub { color: var(--muted); font-size: .8rem; }
+.md-c { color: var(--mc); }
+.md-c[data-c="red"] { --mc: #e03131; } .md-c[data-c="orange"] { --mc: #d9480f; } .md-c[data-c="yellow"] { --mc: #a67c00; } .md-c[data-c="green"] { --mc: #2b8a3e; }
+.md-c[data-c="blue"] { --mc: #1971c2; } .md-c[data-c="purple"] { --mc: #7048e8; } .md-c[data-c="pink"] { --mc: #c2255c; } .md-c[data-c="gray"] { --mc: #6b7280; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .md-c[data-c="red"] { --mc: #ff8787; } :root:not([data-theme="light"]) .md-c[data-c="orange"] { --mc: #ffa94d; }
+  :root:not([data-theme="light"]) .md-c[data-c="yellow"] { --mc: #ffd43b; } :root:not([data-theme="light"]) .md-c[data-c="green"] { --mc: #69db7c; }
+  :root:not([data-theme="light"]) .md-c[data-c="blue"] { --mc: #74c0fc; } :root:not([data-theme="light"]) .md-c[data-c="purple"] { --mc: #b197fc; }
+  :root:not([data-theme="light"]) .md-c[data-c="pink"] { --mc: #faa2c1; } :root:not([data-theme="light"]) .md-c[data-c="gray"] { --mc: #adb5bd; }
+}
+:root[data-theme="dark"] .md-c[data-c="red"] { --mc: #ff8787; } :root[data-theme="dark"] .md-c[data-c="orange"] { --mc: #ffa94d; }
+:root[data-theme="dark"] .md-c[data-c="yellow"] { --mc: #ffd43b; } :root[data-theme="dark"] .md-c[data-c="green"] { --mc: #69db7c; }
+:root[data-theme="dark"] .md-c[data-c="blue"] { --mc: #74c0fc; } :root[data-theme="dark"] .md-c[data-c="purple"] { --mc: #b197fc; }
+:root[data-theme="dark"] .md-c[data-c="pink"] { --mc: #faa2c1; } :root[data-theme="dark"] .md-c[data-c="gray"] { --mc: #adb5bd; }
 dialog.help { max-height: calc(100dvh - 32px); overflow-y: auto; word-break: keep-all; } /* 한글이 단어 중간에서 끊기지 않게 */
 .help h3 { margin: 18px 0 6px; font-size: .95rem; color: var(--text); }
 .help p { margin: 10px 0 4px; font-size: .9rem; }

@@ -8,6 +8,18 @@ import { JSDOM } from "jsdom";
 const { window } = new JSDOM("", { runScripts: "outside-only" });
 window.eval(readFileSync(new URL("../static/vendor/markdown.bundle.js", import.meta.url), "utf8"));
 const render = (t) => window.EvasMarkdown.render(t);
+// 원시 HTML은 글자 그대로 보이므로 "<script"가 이스케이프된 글로 남는 것은 괜찮다: 결과를 DOM으로 읽어 위험한 요소·속성이 없는지 본다
+const dom = (html) => { const d = window.document.createElement("div"); d.innerHTML = html; return d; };
+const assertSafe = (html, msg = "") => {
+  const d = dom(html);
+  assert.equal(d.querySelector("script,iframe,svg,style,form,area,video,audio,source,track,input:not([type=checkbox])"), null, `${msg} -> ${html}`);
+  for (const el of d.querySelectorAll("*")) {
+    for (const a of el.attributes) {
+      assert.ok(!/^on|^(?:style|id|for|form|formaction|background)$/i.test(a.name), `${msg} ${a.name} -> ${html}`);
+      assert.ok(!/^(?:href|src|xlink:href)$/i.test(a.name) || !/^\s*(?:javascript|data):/i.test(a.value), `${msg} ${a.name} -> ${html}`);
+    }
+  }
+};
 
 for (const bad of [
   "<script>alert(1)</script>",
@@ -19,8 +31,7 @@ for (const bad of [
   '<iframe src="https://example.com"></iframe>',
   '<svg onload="alert(1)"></svg>',
 ]) {
-  const out = render(bad);
-  assert.doesNotMatch(out, /<script|onerror|onload|javascript:|data:text|<iframe/i, `${bad} -> ${out}`);
+  assertSafe(render(bad), bad);
 }
 assert.match(render("**굵게**"), /<strong>굵게<\/strong>/);
 assert.match(render("- [ ] 할 일"), /<input(?=[^>]*type="checkbox")(?=[^>]*disabled)[^>]*>/);
@@ -40,13 +51,14 @@ assert.doesNotMatch(links, /javascript:/);
 assert.doesNotMatch(render("[f](ftp://example.com)"), /href=/); // 허용 스킴은 http/https/mailto뿐
 // 다른 사람의 원시 HTML이 화면 전체를 덮거나(style) 앱의 id를 가로채거나(id) 입력을 받지(form) 못한다
 const raw = render('<style>body{display:none}</style><p style="position:fixed" id="e-meta">x</p><form><input type="text"></form>');
-assert.doesNotMatch(raw, /<style|style=|id="e-meta"|<form|<input/); // input은 할 일 체크박스만 남는다
+assertSafe(raw); // 원시 HTML은 글자일 뿐
 // 미리보기 글자를 눌러 앱 버튼(삭제·로그아웃)이 눌리지 않게(for), 다른 폼 속성도 없게
 const labels = render('<label for="e-del">눌러</label><label for="logout">x</label><img src="a.png" form="f" formaction="https://e.com">');
-assert.doesNotMatch(labels, /\sfor=|\sform=|formaction/, labels);
+assertSafe(labels);
 // 외부 이미지 빈틈: input type=image, table·td background
 const bg = render('<input type="image" src="https://e.com/a.png"><table background="https://e.com/b.png"><tr><td background="https://e.com/c.png">x</td></tr></table>');
-assert.doesNotMatch(bg, /<input|background|e\.com/, bg);
+assertSafe(bg);
+assert.equal(dom(bg).querySelector("input,table,img"), null);
 assert.equal(render(""), "");
 // href가 있는 요소는 태그와 무관하게 새 탭(SVG <a>·<area>로 앱 탭을 외부 사이트로 바꾸지 못하게)
 for (const bad of [
@@ -56,11 +68,12 @@ for (const bad of [
 ]) {
   const out = render(bad);
   for (const tag of out.match(/<[^>]*href=[^>]*>/gi) || []) assert.match(tag, /(?=.*target="_blank")(?=.*rel="noopener noreferrer")/, `${bad} -> ${out}`);
-  assert.doesNotMatch(out, /<svg|<area|xlink/i, `${bad} -> ${out}`);
+  assertSafe(out, bad);
+  assert.equal(dom(out).querySelector("area,svg"), null, out); // 글자일 뿐(주소만 일반 링크)
 }
 // 외부 이미지는 Referer 없이, 영상·소리는 막는다
 assert.match(render("![a](https://e.com/a.png)"), /<img(?=[^>]*referrerpolicy="no-referrer")/);
-assert.doesNotMatch(render('<video src="https://e.com/v.mp4"><source src="https://e.com/v.mp4"><track src="x"></video><audio src="https://e.com/a.mp3"></audio>'), /<video|<audio|<source|<track/);
+assertSafe(render('<video src="https://e.com/v.mp4"><source src="https://e.com/v.mp4"><track src="x"></video><audio src="https://e.com/a.mp3"></audio>'));
 // 주소 규칙: 한글 조사·끝 문장부호·짝 없는 닫는 괄호는 주소가 아니고, 짝이 맞는 괄호는 주소다
 const hrefOf = (t) => (render(t).match(/href="([^"]*)"/) || [])[1];
 assert.equal(hrefOf("https://drive.google.com/xyz에 있어요"), "https://drive.google.com/xyz");
@@ -125,7 +138,7 @@ const NOTE = `이 문단은 길어서 앞부분 ${LIMIT}자까지만 미리보�
 const count = (s, sub) => s.split(sub).length - 1;
 const timed = (text) => { const t0 = performance.now(); const out = render(text); return [out, performance.now() - t0]; };
 // 한 문단이 10만 자: 앞 LIMIT자만 그리고 안내 한 번, 1.5초 안(깊은 중첩 `> `·`1. `는 던지지 않고 글 그대로)
-for (const unit of ["*abc ", "_a ", "**a ", "*~>*", "*a ", "[a ", "`a ", "<a ", "> ", "- ", "1. ", "*"]) {
+for (const unit of ["*abc ", "_a ", "**a ", "*~>*", "*a ", "[a ", "`a ", "<a ", "> ", "- ", "1. ", "*", "__a ", "||a ", "{빨강|a ", "-# ", ">>> ", "#### "]) {
   const [out, ms] = timed(unit.repeat(Math.ceil(100000 / unit.length)));
   assert.ok(ms < 1500, `${JSON.stringify(unit)} 한 문단 10만 자 ${ms.toFixed(0)}ms`);
   assert.equal(count(out, NOTE), 1, JSON.stringify(unit));
@@ -168,7 +181,7 @@ assert.equal(count(twoGroups, NOTE), 1);
 assert.ok(!twoGroups.includes("나"), "펜스 뒷부분은 잘려 나간다");
 // 안내 문구에 글이 끼어들지 않는다: 글 속의 같은 문구·HTML은 무해화되고, 자리표시처럼 보이는 글도 그대로 글자다
 const inj = render("<script>alert(1)</script><img src=x onerror=alert(1)>\nEVASCLIPq0q " + NOTE + "\n" + "가".repeat(LIMIT * 2));
-assert.doesNotMatch(inj, /<script|onerror/i);
+assertSafe(inj);
 assert.equal(count(inj, NOTE), 2); // 글 속 문구 하나 + 진짜 안내 하나
 assert.ok(inj.includes("EVASCLIPq0q"));
 // 한 줄이 아주 긴 블록은 글자 경계에서 자르되 이모지(서로게이트 쌍)를 반으로 가르지 않는다
@@ -204,9 +217,97 @@ assert.equal(sets, before); // 이미 안 겹치면 바꾸지 않는다(깜빡�
 {
   const out = render("안녕 [@홍길동](user:123456789012345678) 와 [@<img src=x onerror=alert(1)>](user:u1) 그리고 [x](user:a b)");
   assert.match(out, /<span class="md-user">@홍길동<\/span>/);
-  assert.doesNotMatch(out, /onerror|<script|href="user:/i);
+  assertSafe(out); assert.doesNotMatch(out, /href="user:/i);
   assert.match(render("[링크](https://a.com)"), /href="https:\/\/a\.com"/); // 일반 링크는 그대로
 }
 assert.match(render("[링크](https://a.com)"), /title="클릭하면 새 탭에서 열립니다"/); // 미리보기 링크에 올리면 여는 방법 안내
-assert.match(render('<a href="https://a.com" title="내 제목">x</a>'), /title="내 제목"/); // 글쓴이가 정한 title은 덮어쓰지 않는다
+assert.equal(dom(render('<a href="https://a.com" title="내 제목">x</a>')).querySelector("a[title=\"내 제목\"]"), null); // 원시 HTML은 지원하지 않는다: 글자로 보인다
+
+// ---- 디스코드식 문법 ----
+const has = (t, re) => assert.match(render(t), re, t);
+const lacks = (t, re) => assert.doesNotMatch(render(t), re, t);
+// 1. __밑줄__ (굵게가 아니다), 조합, 단어 안/스네이크 케이스는 그대로
+has("__밑줄__", /<p><u>밑줄<\/u><\/p>/);
+lacks("__밑줄__", /<strong>/);
+has("__**굵은 밑줄**__", /<u><strong>굵은 밑줄<\/strong><\/u>/);
+has("__*기울인 밑줄*__", /<u><em>기울인 밑줄<\/em><\/u>/);
+has("***굵고 기울임***", /<em><strong>굵고 기울임<\/strong><\/em>|<strong><em>굵고 기울임<\/em><\/strong>/);
+has("**굵게 __밑줄__**", /<strong>굵게 <u>밑줄<\/u><\/strong>/);
+has("__밑줄__은 한글 조사가 붙어도", /<u>밑줄<\/u>은/);
+for (const t of ["snake__case__word", "my_var_name", "a__b", "__", "____", "__ __", "\\_\\_not\\_\\_"]) lacks(t, /<u>/);
+has("snake_case_name", /snake_case_name/);
+lacks("__a\n\nb__", /<u>/); // 빈 줄을 넘지 않는다
+// 2. ||스포일러||
+has("||비밀||", /<span class="md-spoiler" tabindex="0">비밀<\/span>/);
+has("||**굵게** 와 `코드` 와 __밑줄__||", /<span class="md-spoiler" tabindex="0"><strong>굵게<\/strong> 와 <code>코드<\/code> 와 <u>밑줄<\/u><\/span>/);
+has("앞 ||a|| 중간 ||b|| 뒤", /앞 <span[^>]*>a<\/span> 중간 <span[^>]*>b<\/span> 뒤/);
+lacks("||a\n\nb||", /md-spoiler/);
+lacks("||||", /md-spoiler/);
+// 7. 이스케이프
+has("\\|\\|스포일러 아님\\|\\|", /<p>\|\|스포일러 아님\|\|<\/p>/);
+has("\\_\\_밑줄 아님\\_\\_", /<p>__밑줄 아님__<\/p>/);
+has("\\*별\\* \\~물결\\~ \\` \\\\", /<p>\*별\* ~물결~ ` \\<\/p>/);
+lacks("\\*별\\*", /<em>/);
+// 3. -# 작은 글씨
+has("-# 작은 글씨", /<p class="md-sub">작은 글씨<\/p>/);
+has("-# 작은 **굵게** _기울임_", /<p class="md-sub">작은 <strong>굵게<\/strong> <em>기울임<\/em><\/p>/);
+has("본문\n-# 작은", /<p>본문<\/p>\s*<p class="md-sub">작은<\/p>/);
+lacks("-#없음", /md-sub/);
+lacks("-# ", /md-sub/);
+// 4. >>> 문서 끝까지 한 인용, > 는 기존대로
+{
+  const out = render("앞\n>>> 첫째\n둘째\n\n셋째 **굵게**\n\n- 목록");
+  assert.equal(count(out, "<blockquote>"), 1, out);
+  assert.match(out, /<p>앞<\/p>\s*<blockquote>\s*<p>첫째<br>둘째<\/p>\s*<p>셋째 <strong>굵게<\/strong><\/p>\s*<ul>\s*<li>목록<\/li>\s*<\/ul>\s*<\/blockquote>/);
+  assert.match(render("> 한 줄\n\n뒤"), /<blockquote>\s*<p>한 줄<\/p>\s*<\/blockquote>\s*<p>뒤<\/p>/);
+}
+// 5. 제목은 # ## ### 만
+{
+  const out = render("# 하나\n## 둘\n### 셋\n#### 넷\n##### 다섯\n###### 여섯\n####");
+  for (const [n, t] of [[1, "하나"], [2, "둘"], [3, "셋"]]) assert.match(out, new RegExp(`<h${n}>${t}</h${n}>`), out);
+  assert.doesNotMatch(out, /<h[456]>/);
+  for (const t of ["#### 넷", "##### 다섯", "###### 여섯"]) assert.match(out, new RegExp(`<p>${t}</p>`), out);
+  has("####", /<p>####<\/p>/);
+  has("#### 넷 **굵게**", /<p>#### 넷 <strong>굵게<\/strong><\/p>/);
+  has("#태그", /<p>#태그<\/p>/);
+  lacks("제목\n===", /<h1>/); // 밑줄 줄 제목은 글자
+}
+// 6. 원시 HTML은 글자 그대로(이스케이프). 그 밖의 문법은 그대로 동작
+{
+  assert.match(render("<b>x</b>"), /<p>&lt;b&gt;x&lt;\/b&gt;<\/p>/);
+  assert.equal(dom(render("<b>x</b> <div>y</div>\n\n<div>z</div>\n\n<!-- c -->")).querySelector("b,div"), null);
+  assert.equal(dom(render("<img src=x onerror=alert(1)> <script>alert(1)</script>")).querySelector("img,script,[onerror]"), null);
+  assert.match(render("<https://a.com>"), /<a href="https:\/\/a\.com"/); // <주소> 자동 링크는 남는다
+  assert.match(render("```js\nconst a = 1;\n```"), /<pre><code class="language-js">/);
+  assert.match(render("a\nb"), /a<br>b/); // 줄바꿈 한 번도 줄바꿈
+  assert.match(render("---"), /<hr>/);
+  assert.match(render("~~지움~~"), /<del>지움<\/del>/);
+}
+// 글자 색 {이름|글자}: 이름 8개, 같은 줄의 첫 } 까지, 안쪽 서식은 그대로, 모르는 이름·줄바꿈 넘김·코드 안은 적용 안 함
+for (const [ko, en] of Object.entries({ 빨강: "red", 주황: "orange", 노랑: "yellow", 초록: "green", 파랑: "blue", 보라: "purple", 분홍: "pink", 회색: "gray" })) {
+  has(`{${ko}|글자}`, new RegExp(`<p><span class="md-c" data-c="${en}">글자</span></p>`));
+}
+has("{빨강|**굵게** __밑줄__ ||숨김||}", /<span class="md-c" data-c="red"><strong>굵게<\/strong> <u>밑줄<\/u> <span class="md-spoiler"[^>]*>숨김<\/span><\/span>/);
+has("{파랑|a} 와 {초록|b}", /data-c="blue">a<\/span> 와 <span class="md-c" data-c="green">b<\/span>/);
+has("**{보라|굵은 보라}**", /<strong><span class="md-c" data-c="purple">굵은 보라<\/span><\/strong>/);
+for (const t of ["{가나|글자}", "{빨강|글자", "{빨강|}", "{빨강|a\nb}", "{빨강|a\n\nb}", "`{빨강|글자}`", "```\n{빨강|글자}\n```", "{빨강}", "{ 빨강|글자}", "\\{빨강|글자}"]) lacks(t, /md-c/);
+has("{가나|글자}", /\{가나\|글자\}/);
+assertSafe(render("{빨강|<img src=x onerror=alert(1)>}"));
+assert.ok(!/style=/.test(render("{빨강|글자}")), "style 속성은 쓰지 않는다");
+// 악의적인 긴 입력(각 1초 안): 기호만 반복하거나 짝이 안 맞는 열기만 반복
+for (const unit of ["__", "||", "{", "{빨강|", "{빨강|a", "__a", "||a", "__a__b", "||a|||", "_|", "-# ", ">>> ", "#### ", "{빨강|__||", "__ **a "]) {
+  const [, ms] = timed(unit.repeat(Math.ceil(1e5 / unit.length)));
+  assert.ok(ms < 1000, `${JSON.stringify(unit)} x1e5 ${ms.toFixed(0)}ms`);
+}
+// 같은 문단에 짝 없는 열기 수백 개 + 줄바꿈이 섞여도 시간이 제곱으로 늘지 않는다
+for (const unit of ["__a ", "||a ", "{빨강|a\n", "__a\n", "||a\n"]) {
+  const ms1 = timed(unit.repeat(500))[1], ms2 = timed(unit.repeat(1000))[1];
+  assert.ok(ms2 < 4 * ms1 + 200 && ms2 < 1000, `${JSON.stringify(unit)} 500회 ${ms1.toFixed(0)}ms, 1000회 ${ms2.toFixed(0)}ms`);
+}
+// 변환 결과는 class·data-c·tabindex만 남기고 DOMPurify를 통과한다(style 등은 여전히 금지)
+{
+  const out = dom(render("||a|| {분홍|b}"));
+  assert.ok(out.querySelector('span.md-spoiler[tabindex="0"]') && out.querySelector('span.md-c[data-c="pink"]'));
+  assertSafe(render('||<span style="x" id="e-meta" onclick="a()">x</span>||'));
+}
 console.log("ok");
