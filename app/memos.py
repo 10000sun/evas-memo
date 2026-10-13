@@ -219,7 +219,9 @@ async def del_memo(mid: int, bg: BackgroundTasks, user=Depends(current_user)):
         public = m["kind"] == "shared" and _public(con, mid)
         if not con.execute(f"DELETE FROM memos WHERE id=?{SAME}", (mid, *_same(m))).rowcount:
             _changed(con, mid, user)
-        if public:  # 비공개 공유 메모는 기록·푸시가 없다(제한으로 바뀔 때 이미 '삭제' 한 줄이 남았다)
+        if public and not m["title"].strip() and not (m["body_text"] or "").strip():
+            con.execute("DELETE FROM activity WHERE memo_id=?", (mid,))  # 빈 새 메모를 바로 지운 것: 만든 적 없는 것으로(작성 기록도 지운다)
+        elif public:  # 비공개 공유 메모는 기록·푸시가 없다(제한으로 바뀔 때 이미 '삭제' 한 줄이 남았다)
             activity.log(con, "delete", mid, m["title"], user)
             bg.add_task(push.notify, "delete", m["title"], user)
     await ws.rooms.drop(mid)

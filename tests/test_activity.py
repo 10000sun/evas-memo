@@ -140,3 +140,17 @@ def test_push_subscribe_and_key(c, monkeypatch):
     assert c.post("/api/push/unsubscribe", json=sub, headers=as_("a")).status_code == 204
     with db.connect() as con:
         assert con.execute("SELECT COUNT(*) FROM push_subs").fetchone()[0] == 0
+
+
+def test_빈_새_공동_메모를_바로_지우면_작성_기록도_없다(c, pushed):
+    m = new(c, "a", "shared", title="")
+    assert kinds(c, "b") == ["add"]  # 만든 순간에는 기록이 남는다
+    assert c.delete(f"/api/memos/{m['id']}", headers=as_("a")).status_code == 204
+    assert kinds(c, "b") == []  # 지우면 만든 적 없는 것으로: 작성 기록도 '삭제' 기록도 없다
+    assert [p[0] for p in pushed] == ["add"]  # 이미 나간 알림은 되돌릴 수 없다(삭제 알림은 보내지 않는다)
+
+
+def test_제목이_있는_공동_메모를_지우면_삭제_기록이_남는다(c, pushed):
+    m = new(c, "a", "shared", title="회의록")
+    assert c.delete(f"/api/memos/{m['id']}", headers=as_("a")).status_code == 204
+    assert kinds(c, "b") == ["delete", "add"]

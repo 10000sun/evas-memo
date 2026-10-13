@@ -49,6 +49,9 @@ const KINDS = {
     inRev: false,
   },
 };
+// '+ 메모'로 방금 만든 메모의 id. 제목·본문이 비어 있는 채 나가면(뒤로 가기 등) 그 메모는 만들지 않은 것으로 하고 지운다
+const fresh = new Set();
+const isBlank = () => !!cur && fresh.has(cur.id) && !$("e-title").value.trim() && !!ed && !ed.view.state.doc.toString().trim();
 let conf = {}; // /api/config: 앱 주소들(memo_url·calendar_url)과 캘린더 연동 켜짐(link)
 const linkBases = () => ({ event: conf.calendar_url, memo: conf.memo_url }); // MemoLink 종류별 앱 주소
 // 딥링크 /?memo=<id> -> #<id>(편집 화면). 새로고침해도 다시 뛰지 않게 쿼리는 지운다
@@ -259,6 +262,7 @@ $("add").onclick = async () => {
       kind: cur ? cur.kind : tab, category_id: shown.size === 1 ? [...shown][0] : null, // 분류 하나로 거르고 있으면 그 분류로
       folder_id: !cur && typeof fsel === "number" ? fsel : null }) }); // 목록에서 폴더를 보고 있으면 그 폴더에
     focusTitle = true;
+    fresh.add(m.id);
     location.hash = m.id;
   } catch (e) { toast(e.message); }
 };
@@ -281,7 +285,10 @@ async function saveTitle(keepalive) {
 $("e-title").oninput = () => { status("저장 중…"); clearTimeout(titleTimer); titleTimer = setTimeout(saveTitle, 700); };
 $("e-cat").onchange = () => put({ category_id: $("e-cat").value ? +$("e-cat").value : null });
 $("e-folder").onchange = () => put({ folder_id: $("e-folder").value ? +$("e-folder").value : null }).then(refreshFolders);
-addEventListener("pagehide", () => saveTitle(true));
+addEventListener("pagehide", () => {
+  saveTitle(true);
+  if (isBlank()) fetch(`/api/memos/${cur.id}`, { method: "DELETE", keepalive: true }); // 탭을 닫아도 빈 새 메모는 남기지 않는다
+});
 
 function paintMemo() {
   const m = cur, k = KINDS[m.kind];
@@ -459,8 +466,11 @@ function watch(e, id) {
 async function closeMemo() {
   ++openReq;
   await saveTitle();
+  const blank = isBlank() ? cur.id : 0;
+  if (cur && !blank) fresh.delete(cur.id); // 내용이 생긴 메모는 이후 비워도 자동으로 지우지 않는다
   if (ed) { const e = ed; ed = null; e.destroy(); }
   cur = null; deleting = false;
+  if (blank) { fresh.delete(blank); try { await api(`/api/memos/${blank}`, { method: "DELETE" }); } catch { /* 이미 없거나 못 지우면 그대로 둔다 */ } }
   clearTimeout(previewTimer); setMode("edit");
   clearTimeout(chipTimer); chipSeq++; linkInfo.clear(); $("e-links").hidden = true;
   $("e-body").replaceChildren(); $("e-preview").replaceChildren(); $("e-links").replaceChildren(); $("e-peers").textContent = ""; status("");
