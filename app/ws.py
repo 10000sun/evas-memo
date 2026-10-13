@@ -142,6 +142,10 @@ class _Server(WebsocketServer):
         await super().delete_room(room=room)
 
 
+# 삭제와 이동 모두 같은 닫힘 사유를 쓴다: 편집 중 접근을 잃은 사람이 옮겨졌는지 지워졌는지 알 수 없게
+GONE_REASON = "메모가 삭제되었습니다"
+
+
 class Rooms:
     """메모 id별 방 관리자. 서버 객체는 이벤트 루프에 묶이므로 앱이 시작할 때마다 새로 만든다(lifespan)."""
 
@@ -152,7 +156,7 @@ class Rooms:
         """열려 있는 방(없으면 None)."""
         return self.server.rooms.get(str(memo_id))
 
-    async def drop(self, memo_id, code=4404, reason="메모가 삭제되었습니다"):
+    async def drop(self, memo_id, code=4404, reason=GONE_REASON):
         """메모 삭제: 저장하지 않고 방을 내리고 접속자를 끊는다.
 
         DB 삭제 직후 await 없이 방을 빼야 한다: 그 사이 같은 id(AUTOINCREMENT 없는 옛 DB)의 새 메모가 옛 방에 붙지 않게.

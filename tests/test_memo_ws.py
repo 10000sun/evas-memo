@@ -228,6 +228,7 @@ def test_delete_closes_open_personal_room_and_reused_id_is_clean(c):
             p.pump()
             assert c.delete(f"/api/memos/{m}", headers=as_("a")).status_code == 204
             assert wait_closed(p) == 4404  # 지운 메모의 편집기는 끊긴다
+            assert p.closed.reason == "메모가 삭제되었습니다"  # 전율 이동 때 닫힘 사유와 같다(test_admin_space)
             # AUTOINCREMENT가 없는 옛 DB처럼 같은 id가 남의 새 메모에 다시 쓰인 경우
             with db.connect() as con:
                 con.execute("INSERT INTO memos(id,kind,owner_id,title,created_by,created_at,updated_at) "
