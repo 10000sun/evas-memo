@@ -10,11 +10,17 @@ DEFAULT_CATEGORIES = [
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS categories(
   id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, color TEXT NOT NULL);
+-- 폴더: 개인(owner_id=본인)·공동. 상위 폴더가 지워지면 하위도 함께 지워지고, 메모는 folder_id만 NULL로 남는다
+CREATE TABLE IF NOT EXISTS folders(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL CHECK(kind IN ('personal','shared')),
+  owner_id TEXT, parent_id INTEGER REFERENCES folders(id) ON DELETE CASCADE, name TEXT NOT NULL,
+  created_by TEXT, created_name TEXT, created_at TEXT);
 -- AUTOINCREMENT: 지운 메모의 id를 다시 쓰지 않는다(아직 열려 있는 옛 메모의 실시간 방에 새 메모가 섞이지 않게)
 CREATE TABLE IF NOT EXISTS memos(
   id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL CHECK(kind IN ('personal','shared')),
   owner_id TEXT, title TEXT NOT NULL DEFAULT '',
   category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+  folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL,
   body_text TEXT NOT NULL DEFAULT '', ydoc BLOB,
   created_by TEXT, created_name TEXT, updated_by TEXT, updated_name TEXT,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -56,6 +62,9 @@ def connect():
 def init():
     with connect() as con:
         con.executescript(SCHEMA)
+        # 폴더 도입 전 운영 DB: memos가 이미 있어 CREATE가 건너뛰어지므로 열만 덧붙인다(데이터 그대로)
+        if "folder_id" not in {r["name"] for r in con.execute("PRAGMA table_info(memos)")}:
+            con.execute("ALTER TABLE memos ADD COLUMN folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL")
         if not con.execute("SELECT 1 FROM categories").fetchone():
             con.executemany("INSERT INTO categories(name,color) VALUES(?,?)", DEFAULT_CATEGORIES)
         # 첫 관리자는 웹에서 만들 수 없으니(닭과 달걀) 환경변수로 시드한다

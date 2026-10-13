@@ -6,16 +6,17 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pycrdt import Doc
 from pydantic import BaseModel, field_validator
 
-from . import activity, db, push, ws
+from . import activity, db, folders, push, ws
 from .auth import current_user, editor
 
 router = APIRouter(prefix="/api/memos")
-FIELDS = "id, kind, owner_id, title, category_id, body_text, created_name, updated_name, updated_at"
+FIELDS = "id, kind, owner_id, title, category_id, folder_id, body_text, created_name, updated_name, updated_at"
 
 
 class MemoEdit(BaseModel):
     title: str = ""
     category_id: int | None = None
+    folder_id: int | None = None
 
     @field_validator("title")
     @classmethod
@@ -36,25 +37,31 @@ def _get(con, mid, user):
     return m
 
 
+def _check_folder(con, folder_id, kind, user):
+    """메모의 폴더는 같은 종류여야 하고, 개인이면 본인 폴더여야 한다. 남의 개인 폴더는 없는 것처럼 404."""
+    if folder_id is not None and folders.get_visible(con, folder_id, user)["kind"] != kind:
+        raise HTTPException(422, "메모와 폴더의 종류가 다릅니다")
+
+
 def _out(con, mid):
     return dict(con.execute(f"SELECT {FIELDS} FROM memos WHERE id=?", (mid,)).fetchone())
 
 
-def _insert(con, user, kind, title, category_id, body_text="", ydoc=None):
+def _insert(con, user, kind, title, category_id, body_text="", ydoc=None, folder_id=None):
     t = db.now()
     try:
         return con.execute(
-            "INSERT INTO memos(kind,owner_id,title,category_id,body_text,ydoc,created_by,created_name,"
-            "updated_by,updated_name,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-            (kind, user["id"], title, category_id, body_text, ydoc or Doc().get_update(),
+            "INSERT INTO memos(kind,owner_id,title,category_id,folder_id,body_text,ydoc,created_by,created_name,"
+            "updated_by,updated_name,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (kind, user["id"], title, category_id, folder_id, body_text, ydoc or Doc().get_update(),
              user["id"], user["name"], user["id"], user["name"], t, t)).lastrowid
     except sqlite3.IntegrityError:
         raise HTTPException(400, "없는 분류입니다")
 
 
 @router.get("")
-def list_memos(kind: Literal["personal", "shared"], category_id: int | None = None, q: str = "",
-               user=Depends(current_user)):
+def list_memos(kind: Literal["personal", "shared"], category_id: int | None = None, folder_id: str | None = None,
+               q: str = "", user=Depends(current_user)):
     sql, args = f"SELECT {FIELDS} FROM memos WHERE kind=?", [kind]
     if kind == "personal":
         sql += " AND owner_id=?"
@@ -62,6 +69,13 @@ def list_memos(kind: Literal["personal", "shared"], category_id: int | None = No
     if category_id is not None:
         sql += " AND category_id=?"
         args.append(category_id)
+    if folder_id == "none":  # 폴더 없음. 숫자면 그 폴더 직속 메모만(하위 폴더 메모는 제외)
+        sql += " AND folder_id IS NULL"
+    elif folder_id is not None:
+        if not folder_id.isdecimal():
+            raise HTTPException(422, "folder_id는 숫자 또는 none")
+        sql += " AND folder_id=?"
+        args.append(int(folder_id))
     if q:  # instr: LIKE와 달리 %, _를 글자 그대로 찾는다
         sql += " AND (instr(lower(title), lower(?)) OR instr(lower(body_text), lower(?)))"
         args += [q, q]
@@ -72,7 +86,8 @@ def list_memos(kind: Literal["personal", "shared"], category_id: int | None = No
 @router.post("", status_code=201)
 def add_memo(m: MemoIn, bg: BackgroundTasks, user=Depends(editor)):
     with db.connect() as con:
-        mid = _insert(con, user, m.kind, m.title, m.category_id)
+        _check_folder(con, m.folder_id, m.kind, user)
+        mid = _insert(con, user, m.kind, m.title, m.category_id, folder_id=m.folder_id)
         if m.kind == "shared":  # 개인 메모는 기록·푸시가 없다
             activity.log(con, "add", mid, m.title, user)
             bg.add_task(push.notify, "add", m.title, user)
@@ -93,6 +108,8 @@ def edit_memo(mid: int, m: MemoEdit, user=Depends(current_user)):
         memo = _get(con, mid, user)
         if not ws.can_edit(memo, user):
             raise HTTPException(403, "권한이 없습니다")
+        if fields.get("folder_id") is not None:
+            _check_folder(con, fields["folder_id"], memo["kind"], user)
         sets = "".join(f"{k}=?, " for k in fields)
         try:
             con.execute(f"UPDATE memos SET {sets}updated_by=?, updated_name=?, updated_at=? WHERE id=?",
@@ -126,7 +143,7 @@ def share_memo(mid: int, bg: BackgroundTasks, user=Depends(editor)):
         m = _get(con, mid, user)
         if m["kind"] != "personal":
             raise HTTPException(409, "이미 공동 메모입니다")
-        con.execute("UPDATE memos SET kind='shared' WHERE id=?", (mid,))
+        con.execute("UPDATE memos SET kind='shared', folder_id=NULL WHERE id=?", (mid,))
         activity.log(con, "add", mid, m["title"], user)
         bg.add_task(push.notify, "add", m["title"], user)
         return _out(con, mid)
