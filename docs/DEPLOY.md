@@ -68,6 +68,15 @@ un-caddy.bat`). 메모 쪽 작업 이름은 `evas-memo-*`라 캘린더와 겹치
 5. 두 주소에 각각 접속해 확인한다. 한쪽 Caddy를 재시작하면 두 서비스가 같이 잠깐 끊긴다.
 6. 메모의 디스코드 Redirects는 메모 주소만 추가하면 된다(캘린더 Redirect는 그대로).
 
+## 캘린더 연동 설정(선택)
+메모 `@` 태그·앱 전환 링크를 쓰려면 두 앱을 서로 알려 준다. 브라우저는 상대 서버를 직접 부르지 않고, 서버끼리 비밀키(`LINK_API_KEY`)로 통신한다.
+1. 비밀키를 한 번 만든다: `python -c "import secrets;print(secrets.token_urlsafe(32))"` → **메모와 캘린더 `.env` 둘 다** `LINK_API_KEY=<같은 값>`
+2. 메모 `.env`: `CALENDAR_URL=https://캘린더주소`(끝에 `/` 없이. 없으면 `SHARED_CALENDAR_URL`을 쓴다), `CALENDAR_INTERNAL_URL=http://127.0.0.1:8000`(캘린더를 서버 안에서 부르는 주소. 비우면 `SHARED_CALENDAR_PORT` 또는 8000)
+3. 캘린더 `.env`: `MEMO_URL=https://메모주소`, `MEMO_INTERNAL_URL=http://127.0.0.1:8001`
+4. 두 앱을 다시 실행한다. `LINK_API_KEY`를 비우면 연동 기능이 꺼지고 앱은 그대로 동작한다.
+- `/internal/*`은 앱끼리만 쓰는 경로다. `Caddyfile`·`Caddyfile.shared`가 바깥 요청에는 404를 돌려주고, 앱도 비밀키(`X-Link-Key`)가 맞을 때만 응답한다. 두 Caddy 설정을 직접 쓰고 있다면 같은 `@internal` 규칙이 있는지 확인한다.
+- 상대 앱이 꺼져 있어도 이 앱의 편집·저장은 영향이 없다(상대 호출은 3초 안에 끝나고 "연결할 수 없습니다"만 보인다).
+
 ## 문제가 생기면
 - `No module named uvicorn`(또는 fastapi 등): 패키지를 설치하지 않았거나 **다른 파이썬에 설치**된 것. 레포 폴더에서 `python -m pip install -r requirements.txt`를 다시 실행(`pip` 대신 `python -m pip`로 실행해야 `run-app.bat`이 쓰는 파이썬과 같은 곳에 설치된다)
 - 접속이 안 됨: 바깥(LTE 등)에서 시도 → 같은 집 와이파이에서는 공유기가 막는 경우(헤어핀)가 있다
