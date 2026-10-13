@@ -1,6 +1,6 @@
 # 서버 PC 배포 (포트포워딩 + 동적 DNS + Caddy)
 
-구성: 인터넷 → 공유기(80/443 전달) → Caddy(HTTPS) → 메모 앱(127.0.0.1:8000)
+구성: 인터넷 → 공유기(80/443 전달) → Caddy(HTTPS) → 메모 앱(127.0.0.1:8001)
 
 ## 0. 먼저 확인: 포트포워딩이 되는 인터넷인가
 공유기 관리 화면의 **WAN(인터넷) IP**와 "내 IP 확인" 사이트의 IP가 **같아야** 한다. 다르면 통신사 공유 IP라 이 방식은 불가능(→ Cloudflare Tunnel).
@@ -22,7 +22,7 @@
 ## 2. 공유기 포트포워딩
 1. 서버 PC에 **고정 내부 IP**를 준다(공유기의 DHCP 고정 할당). 안 하면 PC가 바뀐 IP를 받아 전달이 끊긴다.
 2. 포트포워딩: 외부 **80**, **443** → 서버 PC 내부 IP의 80, 443 (TCP). 80은 인증서 발급에 필요하다.
-3. 8000번은 **열지 않는다**(앱은 PC 안에서만 받는다).
+3. 8001번(캘린더는 8000번)은 **열지 않는다**(앱은 PC 안에서만 받는다).
 
 ## 3. Caddy 설치
 1. https://caddyserver.com/download 에서 Windows용 `caddy.exe`를 받아 PATH가 잡힌 폴더에 둔다
@@ -49,7 +49,24 @@
 ## 주의
 - 앱은 **워커 1개**로만 실행한다(`run-app.bat`·작업 스케줄러가 이미 그렇게 등록한다). 워커를 늘리면 공동 편집이 어긋난다.
 - 서버 시간대는 한국(KST)으로 둔다. `SESSION_SECRET`은 `.env`에 고정하고, `EVAS_DEV_AUTH`는 운영 `.env`에 넣지 않는다.
-- 같은 PC에 에바스 캘린더도 올려 두었다면 둘 다 8000번을 쓰므로 부딪힌다. 한쪽의 포트(`run-app.bat`, 작업 등록 인자, `Caddyfile`)와 도메인을 바꾸고, Caddy는 한 프로그램에서 두 도메인을 받게 `Caddyfile`을 합친다.
+- 캘린더와 같은 PC에 올릴 때는 아래 "캘린더와 같은 PC에 올리기"를 따른다.
+
+## 캘린더와 같은 PC에 올리기
+메모 앱은 기본 포트가 **8001**이라 캘린더(8000)와 겹치지 않는다. 문제는 Caddy다: 80/443은 한 프로그램만 쓸 수 있으므로 **Caddy를 하나만** 띄워 두 주소를 받게 한다. 캘린더 레포는 고치지 않는다.
+1. 주소를 하나 더 만든다(메모용). 캘린더 주소와 달라야 한다. 포트포워딩(80/443)은 그대로 한 번만.
+2. 메모 `.env`에 아래를 추가한다.
+   ```
+   PUBLIC_URL=https://메모주소
+   SHARED_CALENDAR_URL=https://캘린더주소
+   # (선택) 포트를 바꿨다면: EVAS_PORT=8001, SHARED_CALENDAR_PORT=8000
+   ```
+   `SHARED_CALENDAR_URL`이 있으면 `run-caddy.bat`이 `Caddyfile.shared`를 써서 두 주소를 각각 8001(메모)·8000(캘린더)로 넘긴다.
+3. **캘린더의 Caddy를 끈다**: 캘린더의 `run-caddy.bat` 창을 닫고, 작업 스케줄러에 등록했다면 `schtasks /Delete /TN evas-caddy /F`. (메모의 Caddy가 캘린더 주소도 받는다. 캘린더 앱 자체와 `evas-app` 작업은 그대로 둔다.)
+4. 메모 앱 실행(`scripts
+un-app.bat` 또는 `install-tasks.bat`)과 Caddy 실행(`scripts
+un-caddy.bat`). 메모 쪽 작업 이름은 `evas-memo-*`라 캘린더와 겹치지 않는다.
+5. 두 주소에 각각 접속해 확인한다. 한쪽 Caddy를 재시작하면 두 서비스가 같이 잠깐 끊긴다.
+6. 메모의 디스코드 Redirects는 메모 주소만 추가하면 된다(캘린더 Redirect는 그대로).
 
 ## 문제가 생기면
 - `No module named uvicorn`(또는 fastapi 등): 패키지를 설치하지 않았거나 **다른 파이썬에 설치**된 것. 레포 폴더에서 `python -m pip install -r requirements.txt`를 다시 실행(`pip` 대신 `python -m pip`로 실행해야 `run-app.bat`이 쓰는 파이썬과 같은 곳에 설치된다)

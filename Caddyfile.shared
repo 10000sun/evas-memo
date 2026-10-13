@@ -1,0 +1,10 @@
+# 캘린더와 메모를 한 PC에서 쓸 때: Caddy 하나가 두 주소를 받아 각 앱으로 넘긴다.
+# 메모 .env에 SHARED_CALENDAR_URL이 있으면 run-caddy.bat이 이 파일을 쓴다. 캘린더의 evas-caddy 작업/창은 꺼야 한다(80/443을 둘이 못 쓴다).
+# DOMAIN=메모 주소, CAL_DOMAIN=캘린더 주소(둘 다 https:// 를 뺀 값). 포트: 메모 PORT(기본 8001), 캘린더 CAL_PORT(기본 8000)
+{$DOMAIN} {
+	reverse_proxy 127.0.0.1:{$PORT:8001}
+}
+
+{$CAL_DOMAIN} {
+	reverse_proxy 127.0.0.1:{$CAL_PORT:8000}
+}

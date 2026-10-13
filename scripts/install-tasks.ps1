@@ -24,6 +24,14 @@ if (-not (Get-Command caddy -ErrorAction SilentlyContinue)) { throw "caddy.exe�
 
 $user = "$env:USERDOMAIN\$env:USERNAME"
 
+# 앱 포트: .env의 EVAS_PORT, 없으면 8001(캘린더의 8000과 겹치지 않게)
+$port = 8001
+if ((Get-Content "$root\.env" -Raw) -match '(?m)^EVAS_PORT=(\d+)') { $port = $Matches[1] }
+# 캘린더와 같은 PC: Caddy 하나(메모 쪽)가 두 주소를 받는다. 캘린더의 evas-caddy 작업이 남아 있으면 80/443을 두고 부딪힌다
+if ((Select-String -Path "$root\.env" -Pattern '^SHARED_CALENDAR_URL=.+' -Quiet) -and (Get-ScheduledTask -TaskName "evas-caddy" -ErrorAction SilentlyContinue)) {
+    Write-Warning "캘린더의 evas-caddy 작업이 있습니다. 지우고 쓰세요(메모의 Caddy가 캘린더 주소도 받습니다): schtasks /Delete /TN evas-caddy /F"
+}
+
 if ($System) {
     # SYSTEM은 사용자 폴더의 OneDrive 파일(온라인 전용 표시 파일)을 내려받지 못하고, 사용자 PATH도 못 본다
     if ($root -match "OneDrive") { throw "OneDrive 폴더 안입니다. C:\evas-memo 처럼 동기화 안 되는 곳으로 옮긴 뒤 다시 실행하세요." }
@@ -53,7 +61,7 @@ function Add-Task($name, $action, $triggers) {
     Write-Host "등록 완료: $name"
 }
 
-Add-Task "evas-memo-app" (New-ScheduledTaskAction -Execute $py -Argument "-m uvicorn app.main:app --host 127.0.0.1 --port 8000" -WorkingDirectory $root) $boot
+Add-Task "evas-memo-app" (New-ScheduledTaskAction -Execute $py -Argument "-m uvicorn app.main:app --host 127.0.0.1 --port $port" -WorkingDirectory $root) $boot
 Add-Task "evas-memo-caddy" (New-ScheduledTaskAction -Execute "$root\scripts\run-caddy.bat" -WorkingDirectory $root) $boot
 
 # DuckDNS는 .env에 token이 있을 때만(공유기 DDNS 등 다른 주소를 쓰면 필요 없다)
