@@ -5,14 +5,14 @@ import sqlite3
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 from starlette.middleware.sessions import SessionMiddleware
 
 load_dotenv()  # .env의 토큰·비밀값을 읽는다(깃에는 올리지 않는다)
 
-from . import auth, db, folders, links, memos, push, ws  # noqa: E402  (db.init이 EVAS_ADMIN_IDS를 읽기 전에 .env를 불러와야 한다)
+from . import auth, db, folders, links, memos, push, usersync, ws  # noqa: E402  (db.init이 EVAS_ADMIN_IDS를 읽기 전에 .env를 불러와야 한다)
 from .auth import admin, current_user  # noqa: E402
 
 app = FastAPI(title="evas-memo", lifespan=ws.lifespan)
@@ -24,6 +24,7 @@ app.include_router(auth.router)
 app.include_router(folders.router)
 app.include_router(memos.router)
 app.include_router(links.router)
+usersync.register(app, auth.admin)  # 캘린더와 관리자·편집자 권한 맞추기(내부 경로 + 관리 화면의 '상대 앱에 적용')
 app.include_router(ws.router)
 db.init()
 
@@ -149,11 +150,12 @@ async def set_user(uid: str, u: UserIn, me=Depends(admin)):
         con.execute("INSERT INTO users(id,name,role) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET name=?, role=?",
                     (uid, u.name, u.role, u.name, u.role))
     await ws.rooms.revoke(*LOST_ADMIN, user_id=uid)  # 강등: 접근을 잃은 연결(전율 방)만 닫힌다
-    return {"id": uid, **u.model_dump()}
+    # synced: 캘린더에도 같은 권한을 적용했는지(None=연동 꺼짐, False=실패 -> 관리 화면의 '상대 앱에 적용'으로 다시 맞춘다)
+    return {"id": uid, **u.model_dump(), "synced": await usersync.push_async("PUT", uid, u.model_dump())}
 
 
 @app.delete("/api/users/{uid}", status_code=204)
-async def del_user(uid: str, _=Depends(admin)):
+async def del_user(uid: str, response: Response, _=Depends(admin)):
     with db.connect() as con:
         row = con.execute("SELECT role FROM users WHERE id=?", (uid,)).fetchone()
         if not row:
@@ -162,6 +164,9 @@ async def del_user(uid: str, _=Depends(admin)):
             raise HTTPException(409, "마지막 관리자는 지울 수 없습니다")
         con.execute("DELETE FROM users WHERE id=?", (uid,))
     await ws.rooms.revoke(*LOST_ADMIN, user_id=uid)
+    synced = await usersync.push_async("DELETE", uid)
+    if synced is not None:
+        response.headers["X-Synced"] = "1" if synced else "0"
 
 
 def _admin_count(con):
