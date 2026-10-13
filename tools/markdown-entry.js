@@ -21,6 +21,17 @@ const OPTIONS = {
   SANITIZE_NAMED_PROPS: true, // id·name에 접두어를 붙여 앱의 id(e-meta 등)를 가로채지 못하게
 };
 
+// 사람 태그 [@이름](user:<id>)는 링크가 아니라 이름 칩으로 그린다(user:는 허용 스킴이 아니라 그대로 두면 링크가 사라진다).
+// 이름은 marked가 이미 글로 처리한 조각이고, 결과는 아래 DOMPurify를 거친다
+marked.use({
+  renderer: {
+    link({ href, tokens }) {
+      if (!/^user:[A-Za-z0-9_-]{1,40}$/.test(href || "")) return false; // 그 밖의 링크는 기본 처리
+      return `<span class="md-user">${this.parser.parseInline(tokens)}</span>`;
+    },
+  },
+});
+
 // 그냥 적은 http(s)·www. 주소는 에디터와 같은 규칙(url-rule.mjs)으로 링크한다. 그 밖(메일 등)은 marked 기본 자동 링크.
 // marked가 주소 후보마다 다시 부르므로 맨 앞에서 한 번만 맞춰 본다(남은 글 전체를 훑으면 긴 메모에서 제곱 시간)
 marked.use({

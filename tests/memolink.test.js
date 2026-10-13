@@ -79,3 +79,17 @@ test("딥링크 id: 앞의 0을 떼고, 아스키 숫자 1~18자리만 받는다
     assert.strictEqual(M.deepId(s), "", String(s)); // 아랍·전각 숫자, 너무 긴 값, 숫자가 아닌 값은 무시
   assert.strictEqual(links(M.make("x", MEMO, "007"))[0].id, "7"); // 칩 링크는 #007 이든 #7 이든 같은 id
 });
+
+test("사람 태그 [@이름](user:id): 만들고 읽으면 이름·id가 돌아오고, 앱 주소가 없어도 읽힌다", () => {
+  const name = "홍 [길]동 \ <b>", id = "123456789012345678";
+  for (const bases of [B, {}]) {
+    const got = links(M.make(name, "", id, "user"), bases);
+    assert.deepStrictEqual(got.map((x) => [x.kind, x.id, x.title]), [["user", id, name]]);
+  }
+  // 위험한 값은 사람 태그로 읽지 않는다: 공백·괄호·스킴 섞인 id, 너무 긴 id
+  for (const bad of ["user:a b", "user:a/b", "user:javascript:1", "user:" + "1".repeat(41), "user:"])
+    assert.deepStrictEqual(links(`[@x](${bad})`), [], bad);
+  // 일정·메모 링크와 한 글에 섞여도 각각 읽힌다
+  const mixed = links(M.make("회의", CAL, 3, "event") + M.make("사람", "", "u1", "user") + M.make("메모", MEMO, 9, "memo"));
+  assert.deepStrictEqual(mixed.map((x) => x.kind), ["event", "user", "memo"]);
+});

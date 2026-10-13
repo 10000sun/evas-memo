@@ -200,4 +200,11 @@ assert.equal(states.get(2).user.colorLight, states.get(2).user.color + "33");
 const before = sets;
 for (const id of [1, 2, 3]) assignDistinctColor(aw(id), "#a", PALETTE);
 assert.equal(sets, before); // 이미 안 겹치면 바꾸지 않는다(깜빡임 없음)
+// 사람 태그 [@이름](user:id)는 링크가 아니라 이름 칩(span)으로. 이름에 HTML이 들어 있어도 무해화된다
+{
+  const out = render("안녕 [@홍길동](user:123456789012345678) 와 [@<img src=x onerror=alert(1)>](user:u1) 그리고 [x](user:a b)");
+  assert.match(out, /<span class="md-user">@홍길동<\/span>/);
+  assert.doesNotMatch(out, /onerror|<script|href="user:/i);
+  assert.match(render("[링크](https://a.com)"), /href="https:\/\/a\.com"/); // 일반 링크는 그대로
+}
 console.log("ok");

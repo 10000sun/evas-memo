@@ -8,14 +8,22 @@ const MemoLink = (() => {
   const escape = (title) => title.replace(/[\\[\]()]/g, "\\$&"); // 링크 형식이 깨지지 않게
   // 제목은 200자까지(읽는 쪽 TAG의 상한). 자른 자리가 이모지 반쪽이면 그 반쪽도 뺀다
   const cut = (title) => title.slice(0, 200).replace(/[\uD800-\uDBFF]$/, "");
-  const make = (title, url, id, kind = "memo") => `[@${escape(cut(title))}](${url}/?${kind}=${id})`;
+  // 사람 태그는 앱 주소가 필요 없는 [@이름](user:<id>)(디스코드 id). 알림·권한과는 무관한 표시용 글
+  const make = (title, url, id, kind = "memo") => (kind === "user" ? `[@${escape(cut(title))}](user:${id})` : `[@${escape(cut(title))}](${url}/?${kind}=${id})`);
+  const USER = /^user:([A-Za-z0-9_-]{1,40})$/;
   // bases: {종류: 그 앱 주소} 예) {event: 캘린더 주소, memo: 메모 주소}.
   // 글을 [문자열 | {kind, id, title, url}] 조각으로. 주소가 정확히 "<주소>/?<종류>=<숫자>"인 것만 링크, 나머지는 그대로 글자
   function parse(text, bases) {
     const pres = Object.entries(bases).filter(([, u]) => base(u)).map(([k, u]) => [k, u + "/?" + k + "="]);
     const out = [];
     let last = 0;
-    for (const m of pres.length ? text.matchAll(TAG) : []) {
+    for (const m of text.includes("](") ? text.matchAll(TAG) : []) {
+      const who = USER.exec(m[2]);
+      if (who) { // 사람 태그: 링크가 아니라 이름 칩
+        out.push(text.slice(last, m.index), { kind: "user", id: who[1], title: m[1].replace(/\\(.)/g, "$1"), url: "" });
+        last = m.index + m[0].length;
+        continue;
+      }
       const hit = pres.find(([, p]) => m[2].startsWith(p) && /^\d+$/.test(m[2].slice(p.length)));
       if (!hit) continue;
       // id는 앞의 0을 뗀다(?memo=007 도 7번): 서버 조회 결과(숫자)와 맞춰야 '삭제됨'으로 잘못 보이지 않는다
