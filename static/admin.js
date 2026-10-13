@@ -7,7 +7,11 @@ const say = (text, bad = true) => {
 };
 // 저장·삭제 공통: 실패하면 서버 메시지를 그대로 보여주고, 성공하면 목록을 다시 그린다
 const act = async (fn, okText) => {
-  try { await fn(); await render(); say(okText, false); } catch (e) { say(e.message); }
+  try {
+    const r = await fn(); await render();
+    // synced === false: 이 앱에서는 바뀌었지만 캘린더에는 못 알렸다(꺼져 있거나 키가 다름) -> 아래 '적용'으로 다시 맞춘다
+    say(r && r.synced === false ? okText + " 단, 캘린더에는 반영하지 못했습니다. 아래 ‘캘린더에 이 권한 목록 적용’으로 다시 맞추세요." : okText, false);
+  } catch (e) { say(e.message); }
 };
 
 const el = (tag, props = {}, ...kids) => {
@@ -108,6 +112,17 @@ $("user-new").onsubmit = (e) => {
   const id = $("un-id").value.trim();
   act(() => api(`/api/users/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify({ name: $("un-name").value, role: $("un-role").value }) }), "추가했습니다")
     .then(() => { $("un-id").value = ""; $("un-name").value = ""; });
+};
+
+// 두 앱이 연동돼 있을 때만(LINK_API_KEY) 권한 목록을 캘린더에 한 번에 적용하는 버튼
+api("/api/config").then((c) => { $("sync-row").hidden = !c.link; }).catch(() => {});
+$("sync-btn").onclick = async () => {
+  $("sync-btn").disabled = true; $("sync-msg").textContent = "적용 중…";
+  try {
+    const r = await api("/api/users/sync", { method: "POST" });
+    $("sync-msg").textContent = r.failed ? `${r.ok}명 적용, ${r.failed}명 실패(캘린더가 꺼져 있거나 키가 다를 수 있습니다)` : `${r.ok}명 적용했습니다`;
+  } catch (e) { $("sync-msg").textContent = e.message; }
+  $("sync-btn").disabled = false;
 };
 
 (async () => {
