@@ -105,3 +105,10 @@ def test_index_has_share_ui(client):
 def test_empty_new_memo_is_dropped_on_leave(client):
     js = client.get("/app.js").text
     assert "fresh.add(m.id)" in js and "isBlank()" in js and 'method: "DELETE"' in js
+
+
+def test_format_toolbar_and_discord_markdown_present(client):
+    assert 'id="e-tools"' in client.get("/").text and 'id="e-palette"' in client.get("/").text
+    assert "cm-fmt-bubble" in client.get("/vendor/editor.bundle.js").text  # 선택 위 서식 버튼
+    md = client.get("/vendor/markdown.bundle.js").text
+    assert "md-spoiler" in md and "md-sub" in md  # 디스코드식 스포일러·작은 글씨
