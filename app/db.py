@@ -41,11 +41,39 @@ CREATE TABLE IF NOT EXISTS push_subs(
   endpoint TEXT PRIMARY KEY, user_id TEXT NOT NULL, p256dh TEXT NOT NULL, auth TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS users(
   id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('admin','editor')));
+-- 접속 기록일 뿐 권한과 무관하다(권한은 users). 운영 DB에는 IF NOT EXISTS로 표만 더해진다
+CREATE TABLE IF NOT EXISTS members(
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL);
 """
 
 
 def now():
     return datetime.now().isoformat(timespec="seconds")
+
+
+def touch_member(uid, name):
+    """접속한 사람을 members에 등록·갱신한다. 최선 노력: 실패(DB 잠금 등)해도 로그만 남기고 요청을 막지 않는다."""
+    try:
+        _touch(uid, name or uid)
+    except Exception:
+        log.warning("members 등록 실패(무시하고 계속): %s", uid, exc_info=True)
+
+
+def _touch(uid, name):
+    t = now()
+    with connect() as con:
+        # 먼저 읽어 보고, 행이 없거나 이름·날짜가 다를 때만 쓴다(매 요청마다 쓰기 잠금을 잡지 않게)
+        row = con.execute("SELECT name, last_seen FROM members WHERE id=?", (uid,)).fetchone()
+        if row and row["name"] == name and row["last_seen"][:10] == t[:10]:
+            return
+        _upsert_member(con, uid, name, t)
+
+
+def _upsert_member(con, uid, name, t):
+    con.execute(
+        "INSERT INTO members(id,name,first_seen,last_seen) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+        "name=excluded.name, last_seen=CASE WHEN substr(last_seen,1,10)<>substr(excluded.last_seen,1,10) "
+        "THEN excluded.last_seen ELSE last_seen END", (uid, name, t, t))
 
 
 def db_path():
