@@ -11,7 +11,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 load_dotenv()  # .env의 토큰·비밀값을 읽는다(깃에는 올리지 않는다)
 
-from . import auth, db, memos, ws  # noqa: E402  (db.init이 EVAS_ADMIN_IDS를 읽기 전에 .env를 불러와야 한다)
+from . import auth, db, memos, push, ws  # noqa: E402  (db.init이 EVAS_ADMIN_IDS를 읽기 전에 .env를 불러와야 한다)
 from .auth import admin, current_user  # noqa: E402
 
 app = FastAPI(title="evas-memo", lifespan=ws.lifespan)
@@ -135,3 +135,62 @@ def del_user(uid: str, _=Depends(admin)):
 
 def _admin_count(con):
     return con.execute("SELECT COUNT(*) FROM users WHERE role='admin'").fetchone()[0]
+
+
+# --- 알림 (변경 내역·읽음 표시·폰 푸시 구독) ---
+@app.get("/api/activity")
+def list_activity(user=Depends(current_user)):
+    """최근 변경 50건과 안 읽은 개수, 공동 메모 변경 표식(rev). 내가 한 변경은 목록엔 보이지만 안 읽음에 세지 않는다."""
+    with db.connect() as con:
+        # 처음 보는 사람은 지금까지의 내역을 전부 안 읽음으로 쏟아내지 않도록 현재 위치부터 센다
+        con.execute("INSERT OR IGNORE INTO activity_read(user_id,last_id) SELECT ?, COALESCE(MAX(id),0) FROM activity", (user["id"],))
+        last = con.execute("SELECT last_id FROM activity_read WHERE user_id=?", (user["id"],)).fetchone()[0]
+        items = rows(con, "SELECT * FROM activity ORDER BY id DESC LIMIT 50")
+        # 공동 메모가 바뀌었는지 화면이 값 비교로 알아채도록 하는 표식. 개인 메모는 섞이지 않는다
+        rev = con.execute("SELECT COALESCE((SELECT MAX(id) FROM activity),0) || ':' || COUNT(*) || ':' || COALESCE(MAX(updated_at),'') "
+                          "FROM memos WHERE kind='shared'").fetchone()[0]
+    for i in items:
+        i["unread"] = i["id"] > last and i["actor_id"] != user["id"]
+    return {"items": items, "unread": sum(i["unread"] for i in items), "rev": rev}
+
+
+@app.post("/api/activity/read", status_code=204)
+def read_activity(user=Depends(current_user)):
+    with db.connect() as con:
+        con.execute("INSERT OR REPLACE INTO activity_read(user_id,last_id) SELECT ?, COALESCE(MAX(id),0) FROM activity", (user["id"],))
+
+
+class SubKeys(BaseModel):
+    p256dh: str
+    auth: str
+
+
+class SubIn(BaseModel):
+    endpoint: str
+    keys: SubKeys
+
+    @field_validator("endpoint")
+    @classmethod
+    def _endpoint(cls, v):
+        if not push.allowed(v):
+            raise ValueError("지원하지 않는 푸시 주소입니다")
+        return v
+
+
+@app.get("/api/push/key")
+def push_key(_=Depends(current_user)):
+    # 서버에 VAPID 키가 없으면 null -> 화면이 폰 알림 버튼을 숨긴다
+    return {"key": os.environ.get("VAPID_PUBLIC_KEY") if os.environ.get("VAPID_PRIVATE_KEY") else None}
+
+
+@app.post("/api/push/subscribe", status_code=204)
+def push_subscribe(s: SubIn, user=Depends(current_user)):
+    with db.connect() as con:
+        con.execute("INSERT OR REPLACE INTO push_subs(endpoint,user_id,p256dh,auth) VALUES(?,?,?,?)",
+                    (s.endpoint, user["id"], s.keys.p256dh, s.keys.auth))
+
+
+@app.post("/api/push/unsubscribe", status_code=204)
+def push_unsubscribe(s: SubIn, user=Depends(current_user)):
+    with db.connect() as con:
+        con.execute("DELETE FROM push_subs WHERE endpoint=? AND user_id=?", (s.endpoint, user["id"]))
