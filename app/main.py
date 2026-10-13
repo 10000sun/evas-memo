@@ -67,8 +67,8 @@ def rows(con, sql, *a):
 
 @app.get("/api/me")
 def me(user=Depends(current_user)):
-    db.touch_member(user["id"], user["name"])  # 이미 로그인해 둔 세션·개발용 헤더도 여기서 등록된다
-    return user
+    db.touch_member(user["id"], user["name"])  # 이미 로그인해 둔 세션·개발용 헤더도 여기서 등록된다(처음이면 편집자로)
+    return {**user, "role": auth.role_of(user["id"])}  # 방금 등록돼 바뀐 권한을 이 응답에 바로 반영
 
 
 # --- 접속한 사용자 (members: 접속 기록일 뿐 권한과 무관) ---

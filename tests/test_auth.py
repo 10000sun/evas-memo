@@ -33,11 +33,11 @@ def test_로그인하면_세션으로_본인_확인됨_로그아웃하면_다시
     assert discord.get("/api/me").status_code == 401
 
 
-def test_처음_로그인한_사람은_보기전용(discord):
+def test_처음_로그인한_사람은_바로_편집자_관리자는_아님(discord):
     _, st = start(discord)
     discord.get(f"/auth/callback?code=newbie&state={st}")
-    assert discord.get("/api/me").json()["role"] == "viewer"
-    assert discord.post("/api/categories", json=dict(name="x", color="#000000")).status_code == 403
+    assert discord.get("/api/me").json()["role"] == "editor"
+    assert discord.post("/api/categories", json=dict(name="x", color="#000000")).status_code == 403  # 분류 관리는 관리자만
 
 
 def test_state가_다르면_로그인_거절(discord):

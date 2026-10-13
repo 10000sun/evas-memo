@@ -14,13 +14,12 @@ def members(client):
     return {m["id"]: m for m in client.get("/api/members", headers=as_("boss")).json()}
 
 
-def test_first_visit_registers_but_stays_viewer(client):
-    assert client.get("/api/me", headers=as_("newbie")).json()["role"] == "viewer"
+def test_first_visit_registers_as_editor_not_admin(client):
+    assert client.get("/api/me", headers=as_("newbie")).json()["role"] == "editor"  # 첫 응답부터 편집자
     m = members(client)["newbie"]
-    assert m["role"] == "viewer" and m["first_seen"] and m["last_seen"]
-    # 등록돼도 메모를 만들 수 없고 권한도 그대로다
-    assert client.post("/api/memos", json=dict(kind="shared", title="x"), headers=as_("newbie")).status_code == 403
-    assert client.get("/api/me", headers=as_("newbie")).json()["role"] == "viewer"
+    assert m["role"] == "editor" and m["first_seen"] and m["last_seen"]
+    assert client.post("/api/memos", json=dict(kind="shared", title="x"), headers=as_("newbie")).status_code == 201
+    assert client.get("/api/members", headers=as_("newbie")).status_code == 403  # 관리자는 아님
 
 
 def test_dev_login_registers_and_name_updates(client):

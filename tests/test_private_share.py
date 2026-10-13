@@ -24,6 +24,8 @@ def c(client, monkeypatch):
         client.put(f"/api/users/{uid}", json=dict(name=uid, role="editor"), headers=as_("boss"))
     for uid in ("boss", "boss2", "a", "b", "c", "v", "v2"):
         client.get("/api/me", headers=as_(uid))
+    for uid in ("v", "v2"):  # 처음 접속하면 편집자가 되므로, 보기 전용 사용자는 등록을 지워 기본값(보기 전용)으로 되돌린다
+        client.delete(f"/api/users/{uid}", headers=as_("boss"))
     return client
 
 

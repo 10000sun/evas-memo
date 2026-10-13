@@ -74,6 +74,8 @@ def _touch(uid, name):
         if row and row["name"] == name and row["last_seen"][:10] == t[:10]:
             return
         _upsert_member(con, uid, name, t)
+        if row is None:  # 처음 접속한 사람은 바로 편집자로 등록한다(관리자는 아님). 이미 users에 있으면(관리자 등) 그대로 둔다
+            con.execute("INSERT OR IGNORE INTO users(id,name,role) VALUES(?,?, 'editor')", (uid, name))
 
 
 def _upsert_member(con, uid, name, t):
