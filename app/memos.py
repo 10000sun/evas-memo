@@ -57,6 +57,20 @@ def _get(con, mid, user):
     return m
 
 
+# 쓰기는 _get으로 확인한 종류·소유자가 그대로일 때만 한다: 그 사이 다른 요청(스레드)이 이동·공유했으면 0행
+SAME = " AND kind=? AND owner_id IS ?"
+
+
+def _same(m):
+    return m["kind"], m["owner_id"]
+
+
+def _changed(con, mid, user):
+    """쓰기가 0행(확인 뒤 메모가 바뀜): 이제 못 보면 없는 메모와 같은 404, 아직 보이면 409."""
+    _get(con, mid, user)
+    raise HTTPException(409, "메모가 바뀌었습니다. 다시 열어 주세요")
+
+
 def _check_folder(con, folder_id, kind, user):
     """메모의 폴더는 같은 종류여야 하고, 개인이면 본인 폴더여야 한다. 남의 개인 폴더는 없는 것처럼 404."""
     if folder_id is not None and folders.get_visible(con, folder_id, user)["kind"] != kind:
@@ -134,10 +148,12 @@ def edit_memo(mid: int, m: MemoEdit, user=Depends(current_user)):
             _check_folder(con, fields["folder_id"], memo["kind"], user)
         sets = "".join(f"{k}=?, " for k in fields)
         try:
-            con.execute(f"UPDATE memos SET {sets}updated_by=?, updated_name=?, updated_at=? WHERE id=?",
-                        (*fields.values(), user["id"], user["name"], db.now(), mid))
+            n = con.execute(f"UPDATE memos SET {sets}updated_by=?, updated_name=?, updated_at=? WHERE id=?{SAME}",
+                            (*fields.values(), user["id"], user["name"], db.now(), mid, *_same(memo))).rowcount
         except sqlite3.IntegrityError:
             raise HTTPException(400, "없는 분류입니다")
+        if not n:  # 폴더 종류 확인(_check_folder)이 옛 종류 기준이었다
+            _changed(con, mid, user)
         out = _out(con, mid)
         if memo["kind"] == "shared":
             activity.log(con, "edit", mid, out["title"], user)
@@ -151,7 +167,8 @@ async def del_memo(mid: int, bg: BackgroundTasks, user=Depends(current_user)):
         m = _get(con, mid, user)  # 개인 메모는 여기서 이미 소유자만 남는다
         if m["kind"] == "shared" and m["created_by"] != user["id"] and user["role"] != "admin":
             raise HTTPException(403, "작성자와 관리자만 지울 수 있습니다")
-        con.execute("DELETE FROM memos WHERE id=?", (mid,))
+        if not con.execute(f"DELETE FROM memos WHERE id=?{SAME}", (mid, *_same(m))).rowcount:
+            _changed(con, mid, user)
         if m["kind"] == "shared":
             activity.log(con, "delete", mid, m["title"], user)
             bg.add_task(push.notify, "delete", m["title"], user)
@@ -165,7 +182,8 @@ def share_memo(mid: int, bg: BackgroundTasks, user=Depends(editor)):
         m = _get(con, mid, user)
         if m["kind"] != "personal":
             raise HTTPException(409, "개인 메모만 공동으로 옮길 수 있습니다")
-        con.execute("UPDATE memos SET kind='shared', folder_id=NULL WHERE id=?", (mid,))
+        if not con.execute(f"UPDATE memos SET kind='shared', folder_id=NULL WHERE id=?{SAME}", (mid, *_same(m))).rowcount:
+            _changed(con, mid, user)  # 그 사이 전율로 옮겨졌으면 덮어쓰지 않는다
         activity.log(con, "add", mid, m["title"], user)
         bg.add_task(push.notify, "add", m["title"], user)
         return _out(con, mid)
@@ -185,7 +203,9 @@ async def copy_to_personal(mid: int, user=Depends(editor)):
     if room:
         room.save()  # 열려 있는 방의 아직 저장 안 된 편집까지 복사한다
     with db.connect() as con:
-        m = con.execute("SELECT * FROM memos WHERE id=?", (mid,)).fetchone()
+        m = _get(con, mid, user)  # 다시 확인: 그 사이 전율로 옮겨졌으면 복사해 가지 못한다
+        if m["kind"] != "shared":
+            raise HTTPException(409, "공동 메모만 개인으로 복사할 수 있습니다")
         return _out(con, _insert(con, user, "personal", m["title"], m["category_id"], m["body_text"], m["ydoc"]))
 
 
@@ -206,10 +226,10 @@ async def move_memo(mid: int, mv: MoveIn, bg: BackgroundTasks, user=Depends(curr
         raise HTTPException(503, "저장하지 못했습니다. 잠시 후 다시 시도해 주세요")
     owner = user["id"] if mv.to == "personal" else m["owner_id"]
     with db.connect() as con:
-        # 확인한 뒤 다른 요청(스레드)이 먼저 종류를 바꿨으면 옮기지 않는다
-        if not con.execute("UPDATE memos SET kind=?, owner_id=?, folder_id=NULL WHERE id=? AND kind=?",
-                           (mv.to, owner, mid, m["kind"])).rowcount:
-            raise HTTPException(409, "메모가 바뀌었습니다. 다시 열어 주세요")
+        # 확인한 뒤 다른 요청(스레드)이 먼저 종류·소유자를 바꿨으면 옮기지 않는다
+        if not con.execute(f"UPDATE memos SET kind=?, owner_id=?, folder_id=NULL WHERE id=?{SAME}",
+                           (mv.to, owner, mid, *_same(m))).rowcount:
+            _changed(con, mid, user)
         out = _out(con, mid)
         if m["kind"] == "shared":  # 공동에서 사라짐: 삭제처럼 기록하되 푸시는 보내지 않는다
             activity.log(con, "delete", mid, out["title"], user)

@@ -3,6 +3,7 @@
 
 깊이는 폴더 > 하위 폴더까지. 폴더를 지우면 하위 폴더도 지워지고 메모는 folder_id만 비워진다(FK).
 """
+import sqlite3
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -82,9 +83,12 @@ def add_folder(f: FolderIn, user=Depends(current_user)):
             if parent["parent_id"] is not None:
                 raise HTTPException(422, "하위 폴더 아래에는 만들 수 없습니다")
         _check_dup(con, f.kind, owner, f.parent_id, f.name)
-        fid = con.execute(
-            "INSERT INTO folders(kind,owner_id,parent_id,name,created_by,created_name,created_at) VALUES(?,?,?,?,?,?,?)",
-            (f.kind, owner, f.parent_id, f.name, user["id"], user["name"], db.now())).lastrowid
+        try:
+            fid = con.execute(
+                "INSERT INTO folders(kind,owner_id,parent_id,name,created_by,created_name,created_at) VALUES(?,?,?,?,?,?,?)",
+                (f.kind, owner, f.parent_id, f.name, user["id"], user["name"], db.now())).lastrowid
+        except sqlite3.IntegrityError:  # 확인 뒤 상위 폴더가 지워짐(외래키)
+            raise HTTPException(404, "폴더가 없습니다")
         return dict(con.execute(f"SELECT {FIELDS} FROM folders WHERE id=?", (fid,)).fetchone())
 
 
@@ -95,7 +99,9 @@ def rename_folder(fid: int, f: FolderName, user=Depends(current_user)):
         if cur["kind"] == "shared":
             _need_editor(user)
         _check_dup(con, cur["kind"], cur["owner_id"], cur["parent_id"], f.name, fid)
-        con.execute("UPDATE folders SET name=? WHERE id=?", (f.name, fid))
+        # 폴더의 종류·소유자는 바뀌지 않으니 TOCTOU는 '그 사이 지워짐'뿐이다
+        if not con.execute("UPDATE folders SET name=? WHERE id=?", (f.name, fid)).rowcount:
+            raise HTTPException(404, "폴더가 없습니다")
         return dict(con.execute(f"SELECT {FIELDS} FROM folders WHERE id=?", (fid,)).fetchone())
 
 

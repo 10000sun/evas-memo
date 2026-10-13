@@ -1,9 +1,10 @@
 """전율(관리자 전용 메모 공간): 비관리자에게 존재가 드러나지 않음, 이동, 연결 종료, 활동·푸시·연동 제외."""
+import sqlite3
 import time
 
 import pytest
 
-from app import db, push, ws
+from app import db, folders, memos, push, ws
 from tests.conftest import as_
 from tests.test_activity import edit_ws
 from tests.test_memo_ws import Peer, body_in_db, connect, rejected, wait_closed
@@ -305,3 +306,82 @@ def test_admin_folders_kind_match_and_permissions(c):
     assert c.delete(f"/api/folders/{sub}", headers=as_("boss")).status_code == 204  # 만든 사람이 아니어도 관리자
     assert c.get(f"/api/memos/{m}", headers=as_("boss")).json()["folder_id"] is None
     assert c.delete(f"/api/folders/{af}", headers=as_("boss2")).status_code == 204
+
+
+def test_revoke_fails_closed_on_db_error(c, monkeypatch):
+    """권한 재확인 중 DB 오류(database is locked)가 나면 접근 불가로 보고 닫는다. 이동 API도 500이 아니다."""
+    s = new(c, "a", "shared")["id"]
+    with c:
+        with connect(c, s, "a") as w:
+            p = Peer(w)
+
+            def locked(_uid):
+                raise sqlite3.OperationalError("database is locked")
+
+            monkeypatch.setattr(ws.auth, "role_of", locked)
+            c.portal.call(ws.rooms.revoke, 4404, "메모가 옮겨졌습니다", s)
+            assert wait_closed(p) == 4404
+
+
+def race_after_get(monkeypatch, sql, *args):
+    """memos._get(확인)이 통과한 직후 다른 요청이 같은 메모를 바꾼 상황을 만든다(한 번만)."""
+    orig, done = memos._get, []
+
+    def racing(con, mid, user):
+        m = orig(con, mid, user)
+        if not done:
+            done.append(1)
+            with db.connect() as other:
+                other.execute(sql, args)
+        return m
+
+    monkeypatch.setattr(memos, "_get", racing)
+
+
+def kind_of(mid):
+    with db.connect() as con:
+        return dict(con.execute("SELECT kind, owner_id, folder_id FROM memos WHERE id=?", (mid,)).fetchone())
+
+
+def test_writes_recheck_kind_after_concurrent_move(c, monkeypatch):
+    sf = folder(c, "a", "shared")["id"]
+    to_admin = "UPDATE memos SET kind='admin', folder_id=NULL WHERE id=?"
+    # 비관리자의 폴더 지정이 그 사이 전율이 된 메모를 공동 폴더에 넣지 않는다
+    s = new(c, "a", "shared")["id"]
+    race_after_get(monkeypatch, to_admin, s)
+    assert c.put(f"/api/memos/{s}", json={"folder_id": sf}, headers=as_("a")).status_code == 404
+    assert kind_of(s) == {"kind": "admin", "owner_id": "a", "folder_id": None}
+    # 지우기: 그 사이 전율이 된 메모를 비관리자가 지우지 못한다
+    s = new(c, "a", "shared")["id"]
+    race_after_get(monkeypatch, to_admin, s)
+    assert c.delete(f"/api/memos/{s}", headers=as_("a")).status_code == 404
+    assert kind_of(s)["kind"] == "admin"
+    # 공동 -> 개인 복사: 그 사이 전율이 된 메모를 복사해 가지 못한다
+    s = new(c, "a", "shared", "몰래")["id"]
+    race_after_get(monkeypatch, to_admin, s)
+    assert c.post(f"/api/memos/{s}/copy-to-personal", headers=as_("a")).status_code == 404
+    assert "몰래" not in [m["title"] for m in c.get("/api/memos?kind=personal", headers=as_("a")).json()]
+    # /share와 /move가 겹침: 먼저 된 이동을 덮어쓰지 않는다
+    p = new(c, "boss", "personal")["id"]
+    race_after_get(monkeypatch, "UPDATE memos SET kind='admin' WHERE id=?", p)
+    assert c.post(f"/api/memos/{p}/share", headers=as_("boss")).status_code == 409
+    assert kind_of(p)["kind"] == "admin"
+    # 이동끼리 겹침: 전율 -> 개인(다른 관리자 소유)이 먼저 됐으면 전율 -> 공동은 하지 않는다
+    m = new(c, "boss", "admin")["id"]
+    race_after_get(monkeypatch, "UPDATE memos SET kind='personal', owner_id='boss2' WHERE id=?", m)
+    assert move(c, m, "shared", "boss").status_code == 404  # 이제 boss에게는 없는 메모
+    assert kind_of(m) == {"kind": "personal", "owner_id": "boss2", "folder_id": None}
+
+
+def test_rename_folder_deleted_meanwhile_is_404(c, monkeypatch):
+    f = folder(c, "boss", "admin")["id"]
+    orig = folders.get_visible
+
+    def racing(con, fid, user):
+        row = orig(con, fid, user)
+        with db.connect() as other:
+            other.execute("DELETE FROM folders WHERE id=?", (fid,))
+        return row
+
+    monkeypatch.setattr(folders, "get_visible", racing)
+    assert c.put(f"/api/folders/{f}", json=dict(name="새 이름"), headers=as_("boss")).status_code == 404

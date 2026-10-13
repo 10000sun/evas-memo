@@ -1,7 +1,11 @@
+import logging
 import os
 import sqlite3
+import time
 from contextlib import contextmanager
 from datetime import datetime
+
+log = logging.getLogger(__name__)
 
 DEFAULT_CATEGORIES = [
     ("공지", "#e57373"), ("아이디어", "#ffb74d"), ("할 일", "#64b5f6"), ("참고", "#81c784"),
@@ -81,15 +85,22 @@ def init():
 def _allow_admin_kind(con, name, create):
     """kind CHECK에 'admin'이 없는 옛 표를 새 정의로 다시 만든다(SQLite는 CHECK를 고칠 수 없다). 이미 새 표면 아무것도 안 한다.
 
-    한 트랜잭션: 외래키 OFF -> 새 표 생성 -> 열 이름으로 복사 -> 옛 표 삭제 -> 이름 바꾸기 -> 인덱스·AUTOINCREMENT 시퀀스 복원
-    -> foreign_key_check -> 커밋 -> 외래키 ON. 중간에 실패하면 롤백되어 옛 표가 그대로 남는다.
+    한 트랜잭션(BEGIN IMMEDIATE): 외래키 OFF -> 새 표 생성 -> 열 이름으로 복사 -> 옛 표 삭제 -> 이름 바꾸기 -> 인덱스·
+    AUTOINCREMENT 시퀀스 복원 -> foreign_key_check -> 커밋 -> 외래키 ON. 중간에 실패하면 롤백되어 옛 표가 그대로 남는다.
     """
-    if "'admin'" in con.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()[0]:
+    if _has_admin_kind(con, name):
         return
     con.commit()
     con.execute("PRAGMA foreign_keys=OFF")  # 트랜잭션 밖에서만 바뀐다. 옛 표를 지울 때 참조 행이 건드려지지 않게
     try:
-        con.execute("BEGIN")
+        _begin_immediate(con)
+        if _has_admin_kind(con, name):  # 잠금을 기다리는 사이 다른 프로세스가 이미 이전했다
+            con.commit()
+            return
+        # 재작성과 무관하게 이미 있던 위반(외래키를 끈 채 넣은 옛 행)은 시작을 막지 않는다: 새로 생긴 것만 실패로 본다
+        before = _fk_violations(con)
+        if before:
+            log.warning("%s 이전 전부터 있던 외래키 위반 %d건(그대로 둔다): %s", name, len(before), sorted(before)[:10])
         indexes = [r[0] for r in con.execute(
             "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL", (name,))]
         old_seq = con.execute("SELECT seq FROM sqlite_sequence WHERE name=?", (name,)).fetchone()
@@ -105,11 +116,34 @@ def _allow_admin_kind(con, name, create):
             con.execute("DELETE FROM sqlite_sequence WHERE name=?", (name,))
             con.execute("INSERT INTO sqlite_sequence(name, seq) VALUES(?, MAX(?, COALESCE((SELECT MAX(id) FROM {0}), 0)))"
                         .format(name), (name, old_seq[0]))
-        if con.execute("PRAGMA foreign_key_check").fetchall():
-            raise sqlite3.IntegrityError(f"{name} 이전 뒤 외래키 검사 실패")
+        new_violations = _fk_violations(con) - before
+        if new_violations:
+            raise sqlite3.IntegrityError(f"{name} 이전 뒤 새 외래키 위반: {sorted(new_violations)[:10]}")
         con.commit()
     except Exception:
         con.rollback()
         raise
     finally:
         con.execute("PRAGMA foreign_keys=ON")
+
+
+def _has_admin_kind(con, name):
+    return "'admin'" in con.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()[0]
+
+
+def _fk_violations(con):
+    # (표, rowid, 부모 표): fkid는 표를 다시 만들면 순서가 달라질 수 있어 비교에서 뺀다
+    return {(r[0], r[1], r[2]) for r in con.execute("PRAGMA foreign_key_check")}
+
+
+def _begin_immediate(con, tries=5):
+    """쓰기 잠금을 처음부터 잡는다(읽다가 쓰기로 올리며 막히지 않게). 다른 연결이 쥐고 있으면 1초 간격으로 다시 시도."""
+    for i in range(tries):
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            return
+        except sqlite3.OperationalError:
+            if i == tries - 1:
+                raise
+            log.warning("DB가 잠겨 있어 이전을 1초 뒤 다시 시도합니다(%d/%d)", i + 1, tries)
+            time.sleep(1)

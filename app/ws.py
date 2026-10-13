@@ -218,10 +218,14 @@ class _Channel:
         return await self.recv()
 
     def allowed(self) -> bool:
-        """지금 DB 기준(메모 종류·소유자, 내 역할)으로 이 방에 있어도 되나."""
-        with db.connect() as con:
-            memo = con.execute("SELECT kind, owner_id FROM memos WHERE id=?", (self.room.memo_id,)).fetchone()
-        return bool(memo) and can_access(memo, {**self.user, "role": auth.role_of(self.user["id"])})
+        """지금 DB 기준(메모 종류·소유자, 내 역할)으로 이 방에 있어도 되나. 확인하지 못하면(DB 오류) 안 된다고 본다."""
+        try:
+            with db.connect() as con:
+                memo = con.execute("SELECT kind, owner_id FROM memos WHERE id=?", (self.room.memo_id,)).fetchone()
+            return bool(memo) and can_access(memo, {**self.user, "role": auth.role_of(self.user["id"])})
+        except sqlite3.Error:
+            log.exception("메모 %s 접속 권한 재확인 실패: 연결을 닫는다", self.room.memo_id)
+            return False  # fail-closed: 접속자는 다시 연결하면 된다(그때 접속 확인을 다시 거친다)
 
     async def send(self, message: bytes) -> None:
         if not self.joined:
