@@ -208,3 +208,102 @@ def test_text_frame_closes_connection_cleanly(c):
             assert e.value.code == 1003
         with connect(c, m, "a") as w:  # 서버는 멀쩡하다
             assert str(Peer(w).text) == ""
+
+
+def wait_closed(p, timeout=2.0):
+    end = time.time() + timeout
+    while p.closed is None and time.time() < end:
+        time.sleep(0.05)
+    return getattr(p.closed, "code", None)
+
+
+def test_delete_closes_open_personal_room_and_reused_id_is_clean(c):
+    m = new(c, "a", "personal")["id"]
+    with c:
+        with connect(c, m, "a") as w:
+            p = Peer(w)
+            p.text += "비밀"
+            p.push()
+            p.pump()
+            assert c.delete(f"/api/memos/{m}", headers=as_("a")).status_code == 204
+            assert wait_closed(p) == 4404  # 지운 메모의 편집기는 끊긴다
+            # AUTOINCREMENT가 없는 옛 DB처럼 같은 id가 남의 새 메모에 다시 쓰인 경우
+            with db.connect() as con:
+                con.execute("INSERT INTO memos(id,kind,owner_id,title,created_by,created_at,updated_at) "
+                            "VALUES(?,'personal','b','새 메모','b','t','t')", (m,))
+            with connect(c, m, "b") as wb:
+                assert str(Peer(wb).text) == ""  # 옛 방의 본문이 보이지 않는다
+    assert body_in_db(m) == ""
+
+
+def test_delete_shared_closes_editor_connections(c):
+    m = new(c, "a", "shared")["id"]
+    with c:
+        with connect(c, m, "a") as wa, connect(c, m, "b") as wb:
+            pa, pb = Peer(wa), Peer(wb)
+            assert c.delete(f"/api/memos/{m}", headers=as_("boss")).status_code == 204
+            assert wait_closed(pa) == 4404 and wait_closed(pb) == 4404
+        assert rejected(c, m, "a") == 1008
+
+
+def test_pending_update_cannot_bypass_limit(c):
+    """선행 업데이트(U1)를 빼고 뒤 업데이트(U2)를 먼저 보내 보류시킨 뒤 U1을 보내는 우회."""
+    src = Doc()
+    t = src.get("text", type=Text)
+    ups = []
+    src.observe(lambda ev: ups.append(ev.update))
+    t += "a"
+    t += "b" * 100_000
+    u1, u2 = ups
+    m = new(c, "a", "shared")["id"]
+    with c:
+        with connect(c, m, "a") as w:
+            p = Peer(w)
+            p.ws.send_bytes(create_update_message(u2))
+            p.ws.send_bytes(create_update_message(u1))
+            p.pump()
+        with connect(c, m, "b") as w:
+            assert len(str(Peer(w).text)) <= 100_000
+    assert len(body_in_db(m)) <= 100_000
+
+
+def test_oversized_updates_rejected(c, monkeypatch):
+    from pycrdt import Map
+    monkeypatch.setattr(ws, "MAX_BYTES", 10_000)
+    m = new(c, "a", "shared")["id"]
+    with c:
+        with connect(c, m, "a") as w:  # 업데이트 하나가 상한을 넘음(text 밖 루트 타입)
+            p = Peer(w)
+            p.doc.get("m", type=Map)["x"] = "z" * 20_000
+            p.push()
+            p.pump()
+            assert wait_closed(p) == 1009
+        with connect(c, m, "a") as w:  # 하나하나는 작아도 문서 전체가 상한을 넘음
+            p = Peer(w)
+            assert len(p.doc.get("m", type=Map)) == 0  # 앞 연결의 큰 업데이트는 반영되지 않았다
+            for i in range(3):
+                p.doc.get("m", type=Map)[str(i)] = "z" * 4_000
+                p.push()
+                p.pump(0.3)
+            assert wait_closed(p) == 1009
+        with connect(c, m, "b") as w:
+            assert len(Peer(w).doc.get_update()) <= 10_000
+
+
+def test_copy_includes_unsaved_edits_and_needs_access(c, monkeypatch):
+    monkeypatch.setattr(ws, "SAVE_DELAY", 30)  # 자동 저장이 끼어들지 않게
+    s, mine = new(c, "a", "shared")["id"], new(c, "a", "personal")["id"]
+    with c:
+        with connect(c, s, "a") as w1, connect(c, mine, "a") as w2:
+            p1, p2 = Peer(w1), Peer(w2)
+            p1.text += "최신"
+            p2.text += "비밀"
+            p1.push()
+            p2.push()
+            p1.pump()
+            p2.pump()
+            r = c.post(f"/api/memos/{s}/copy-to-personal", headers=as_("b"))
+            assert r.status_code == 201 and r.json()["body_text"] == "최신"
+            # 권한 없는 사람의 복사 요청은 남의 개인 메모를 저장시키지도 않는다
+            assert c.post(f"/api/memos/{mine}/copy-to-personal", headers=as_("b")).status_code == 404
+            assert body_in_db(mine) == ""

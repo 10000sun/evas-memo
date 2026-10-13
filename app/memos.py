@@ -93,12 +93,14 @@ def edit_memo(mid: int, m: MemoEdit, user=Depends(current_user)):
 
 
 @router.delete("/{mid}", status_code=204)
-def del_memo(mid: int, user=Depends(current_user)):
+async def del_memo(mid: int, user=Depends(current_user)):
+    # async: 열린 방(이벤트 루프 소유)을 같은 루프에서 내린다
     with db.connect() as con:
         m = _get(con, mid, user)  # 개인 메모는 여기서 이미 소유자만 남는다
         if m["kind"] == "shared" and m["created_by"] != user["id"] and user["role"] != "admin":
             raise HTTPException(403, "작성자와 관리자만 지울 수 있습니다")
         con.execute("DELETE FROM memos WHERE id=?", (mid,))
+    await ws.rooms.drop(mid)
 
 
 @router.post("/{mid}/share")
@@ -112,13 +114,17 @@ def share_memo(mid: int, user=Depends(editor)):
 
 
 @router.post("/{mid}/copy-to-personal", status_code=201)
-def copy_to_personal(mid: int, user=Depends(current_user)):
-    """공동 -> 개인 '복사': 호출자 소유의 새 메모. ydoc 바이트를 복사하므로 이후 둘은 서로 무관하다."""
+async def copy_to_personal(mid: int, user=Depends(current_user)):
+    """공동 -> 개인 '복사': 호출자 소유의 새 메모. ydoc 바이트를 복사하므로 이후 둘은 서로 무관하다.
+
+    async: 열린 방의 저장(타이머·Yjs 문서)은 이벤트 루프에서만 만진다.
+    """
+    with db.connect() as con:
+        if _get(con, mid, user)["kind"] != "shared":
+            raise HTTPException(409, "공동 메모만 개인으로 복사할 수 있습니다")
     room = ws.rooms.get(mid)
     if room:
         room.save()  # 열려 있는 방의 아직 저장 안 된 편집까지 복사한다
     with db.connect() as con:
-        m = _get(con, mid, user)
-        if m["kind"] != "shared":
-            raise HTTPException(409, "공동 메모만 개인으로 복사할 수 있습니다")
+        m = con.execute("SELECT * FROM memos WHERE id=?", (mid,)).fetchone()
         return _out(con, _insert(con, user, "personal", m["title"], m["category_id"], m["body_text"], m["ydoc"]))

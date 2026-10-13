@@ -6,12 +6,13 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, WebSocket
-from pycrdt import Doc, Text, YMessageType, YSyncMessageType, read_message
+from pycrdt import Doc, Text, YMessageType, YSyncMessageType, create_update_message, read_message
 from pycrdt.websocket import WebsocketServer, YRoom
 
 from . import auth, db
 
 MAX_CHARS = 100_000
+MAX_BYTES = 5_000_000  # 들어오는 업데이트와 문서 전체(Yjs 상태) 바이트 상한. text 밖 루트 타입으로 키우는 것도 막는다
 SAVE_DELAY = 2  # 초. 편집이 계속돼도 첫 변경 뒤 이만큼 지나면 저장한다(재시작 손실을 줄이려고 미루기만 하지 않는다)
 _EDITS = (YSyncMessageType.SYNC_STEP2, YSyncMessageType.SYNC_UPDATE)  # 문서를 바꾸는 동기화 메시지
 
@@ -30,14 +31,20 @@ def can_edit(memo, user) -> bool:
     return can_access(memo, user) and (memo["kind"] == "personal" or user["role"] in ("admin", "editor"))
 
 
-def _too_long(doc: Doc, update: bytes) -> bool:
-    # 늘어나는 글자 수는 업데이트 바이트 수를 넘지 못한다(UTF-8) -> 대부분은 문서를 복제하지 않고 끝난다
-    if len(body(doc)) + len(update) <= MAX_CHARS:
-        return False
+def _integrate(doc: Doc, update: bytes) -> bytes | None:
+    """update를 문서 사본에 적용해 보고, 제한 안이면 실제로 합쳐진 부분(diff)을, 넘으면 None을 돌려준다.
+
+    방에는 원본 update 대신 diff만 넣는다. 선행 업데이트가 빠져 보류(pending)된 조각은 get_update에 안 나오므로
+    버려진다 -> 방 문서에 보이지 않는 보류분이 쌓였다가 나중에 한꺼번에 합쳐지며 제한을 넘는 일이 없다.
+    """
+    if len(update) > MAX_BYTES:
+        return None
     trial = Doc()
     trial.apply_update(doc.get_update())
     trial.apply_update(update)
-    return len(body(trial)) > MAX_CHARS
+    if len(body(trial)) > MAX_CHARS or len(trial.get_update()) > MAX_BYTES:
+        return None
+    return trial.get_update(doc.get_state())
 
 
 class _Room(YRoom):
@@ -50,10 +57,12 @@ class _Room(YRoom):
         if row and row["ydoc"]:
             doc.apply_update(row["ydoc"])
         super().__init__(ydoc=doc)
-        self.memo_id, self.editor, self._timer = memo_id, None, None
+        # editor: 지금 편집 메시지를 보낸 사람, changed_by: 실제로 문서를 바꾼 마지막 사람(저장에 쓴다)
+        self.memo_id, self.editor, self.changed_by, self._timer = memo_id, None, None, None
         self._sub = doc.observe(self._changed)
 
     def _changed(self, _event):
+        self.changed_by = self.editor
         if self._timer is None:
             self._timer = asyncio.get_running_loop().call_later(SAVE_DELAY, self.save)
 
@@ -63,12 +72,18 @@ class _Room(YRoom):
             return
         self._timer.cancel()
         self._timer = None
-        u = self.editor or {}
+        u = self.changed_by or {}
         with db.connect() as con:
             con.execute("UPDATE memos SET ydoc=?, body_text=?, updated_by=COALESCE(?, updated_by), "
                         "updated_name=COALESCE(?, updated_name), updated_at=? WHERE id=?",
                         (self.ydoc.get_update(), body(self.ydoc), u.get("id"), u.get("name"), db.now(),
                          self.memo_id))
+
+    def discard(self):
+        """저장하지 않는다(메모가 지워짐)."""
+        if self._timer:
+            self._timer.cancel()
+        self._timer = None
 
     async def stop(self):
         self.ydoc.unobserve(self._sub)
@@ -84,9 +99,12 @@ class _Server(WebsocketServer):
         return await super().get_room(name)
 
     async def delete_room(self, *, name=None, room=None):
+        room = room or self.rooms[name]
+        if room not in self.rooms.values():
+            return  # 메모 삭제로 이미 내린 방(Rooms.drop)
         # 마지막 접속자가 나감: 방을 내리기 전에 저장해야 곧바로 들어온 사람이 옛 DB를 읽지 않는다
-        (room or self.rooms[name]).save()
-        await super().delete_room(name=name, room=room)
+        room.save()
+        await super().delete_room(room=room)
 
 
 class Rooms:
@@ -98,6 +116,19 @@ class Rooms:
     def get(self, memo_id):
         """열려 있는 방(없으면 None)."""
         return self.server.rooms.get(str(memo_id))
+
+    async def drop(self, memo_id, code=4404, reason="메모가 삭제되었습니다"):
+        """메모 삭제: 저장하지 않고 방을 내리고 접속자를 끊는다.
+
+        DB 삭제 직후 await 없이 방을 빼야 한다: 그 사이 같은 id(AUTOINCREMENT 없는 옛 DB)의 새 메모가 옛 방에 붙지 않게.
+        """
+        room = self.server.rooms.pop(str(memo_id), None)
+        if room is None:
+            return
+        room.discard()
+        for ch in list(room.clients):
+            await ch.close(code, reason)
+        await room.stop()
 
 
 rooms = Rooms()
@@ -127,8 +158,9 @@ class _Channel:
     받은 메시지를 방에 넘기기 전에 거른다: 보기 전용의 편집은 버리고, 100,000자를 넘기는 편집은 연결을 1009로 닫는다.
     """
 
-    def __init__(self, ws: WebSocket, path: str, user: dict, can_edit: bool):
-        self._ws, self._path, self.user, self.can_edit = ws, path, user, can_edit
+    def __init__(self, ws: WebSocket, path: str, user: dict, can_edit: bool, room: _Room):
+        self._ws, self._path, self.user, self.can_edit, self.room = ws, path, user, can_edit, room
+        self.closed = False
 
     @property
     def path(self) -> str:
@@ -146,23 +178,31 @@ class _Channel:
         except Exception:  # 막 끊긴 연결: 방 전체(다른 접속자)를 죽이지 않는다. 끊김은 recv가 처리한다
             pass
 
+    async def close(self, code: int, reason: str = "") -> None:
+        self.closed = True
+        try:
+            await self._ws.close(code, reason)
+        except Exception:  # 이미 끊김
+            pass
+
     async def recv(self) -> bytes:
         while True:
             msg = await self._ws.receive()
-            if msg["type"] == "websocket.disconnect":
+            if msg["type"] == "websocket.disconnect" or self.closed:
                 raise StopAsyncIteration
             data = msg.get("bytes")
             if not data:  # 텍스트 프레임 등 Yjs가 아닌 메시지
-                await self._ws.close(1003)
+                await self.close(1003)
                 raise StopAsyncIteration
             if data[0] == YMessageType.SYNC and len(data) > 1 and data[1] in _EDITS:
                 if not self.can_edit:
                     continue  # 보기 전용: 받기만 하고 적용하지 않는다
-                room = rooms.get(self._path)
-                if _too_long(room.ydoc, read_message(data[2:])):
-                    await self._ws.close(1009)  # 메시지가 너무 큼: 본문 100,000자 제한
+                diff = _integrate(self.room.ydoc, read_message(data[2:]))
+                if diff is None:
+                    await self.close(1009, "본문은 100,000자까지입니다")  # 메시지가 너무 큼
                     raise StopAsyncIteration
-                room.editor = self.user
+                self.room.editor = self.user
+                return create_update_message(diff)
             return data
 
 
@@ -176,4 +216,5 @@ async def memo_ws(websocket: WebSocket, memo_id: int):
         await websocket.close(1008)
         return
     await websocket.accept()
-    await rooms.server.serve(_Channel(websocket, str(memo_id), user, can_edit(memo, user)))
+    room = await rooms.server.get_room(str(memo_id))
+    await rooms.server.serve(_Channel(websocket, str(memo_id), user, can_edit(memo, user), room))
