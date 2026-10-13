@@ -118,33 +118,65 @@ for (const unit of ["https://. ", "https://, ", "https:// ", "www. "]) {
 const ms1 = timeRender("https://a.com/ ".repeat(1e4)), ms2 = timeRender("https://a.com/ ".repeat(2e4));
 assert.ok(ms2 < 3 * ms1 + 100 && ms2 < 5000, `링크 1e4 ${ms1.toFixed(0)}ms, 2e4 ${ms2.toFixed(0)}ms`);
 
-// 긴 메모: 앞 LIMIT자만 그리고 안내를 붙인다. 짝 없는 강조 10만 자도 느려지지 않고, 깊은 중첩도 던지지 않는다
+// 긴 메모: 한 블록(빈 줄 사이 덩어리; 코드 펜스 안의 빈 줄은 한 블록)이 LIMIT자를 넘으면 그 블록만 잘라 그 자리에 안내를 붙이고,
+// 블록이 모두 짧으면 전체가 10만 자여도 자르지 않는다. 느린 입력(짝 없는 강조)이 여러 블록이어도 비용 안전장치가 총 시간을 묶는다
 const { LIMIT } = window.EvasMarkdown;
-const NOTE = `미리보기는 앞부분 ${LIMIT}자까지만 표시합니다. 전체는 편집 화면에서 볼 수 있습니다.`;
+const NOTE = `이 문단은 길어서 앞부분 ${LIMIT}자까지만 미리보기에 표시합니다. 전체는 편집 화면에서 볼 수 있습니다.`;
+const count = (s, sub) => s.split(sub).length - 1;
+const timed = (text) => { const t0 = performance.now(); const out = render(text); return [out, performance.now() - t0]; };
+// 한 문단이 10만 자: 앞 LIMIT자만 그리고 안내 한 번, 1.5초 안(깊은 중첩 `> `·`1. `는 던지지 않고 글 그대로)
 for (const unit of ["*abc ", "_a ", "**a ", "*~>*", "*a ", "[a ", "`a ", "<a ", "> ", "- ", "1. ", "*"]) {
-  const t0 = performance.now();
-  const out = render(unit.repeat(Math.ceil(100000 / unit.length)));
-  const ms = performance.now() - t0;
-  assert.ok(ms < 1500, `${JSON.stringify(unit)} 10만 자 ${ms.toFixed(0)}ms`);
-  assert.ok(out.includes(NOTE), unit);
+  const [out, ms] = timed(unit.repeat(Math.ceil(100000 / unit.length)));
+  assert.ok(ms < 1500, `${JSON.stringify(unit)} 한 문단 10만 자 ${ms.toFixed(0)}ms`);
+  assert.equal(count(out, NOTE), 1, JSON.stringify(unit));
 }
-const short = "가".repeat(LIMIT);
-assert.doesNotMatch(render(short), /미리보기는 앞부분/); // 딱 LIMIT자는 자르지 않는다
+// 가장 느린 문단(6000자)을 16개 이어 붙인 10만 자: 블록 수에 따라 늘어나도 비용 안전장치가 있어 수 초 안(측정 최대 약 3초)
+for (const unit of ["*abc ", "_a ", "**a ", "*~>*", "__# "]) {
+  const block = unit.repeat(Math.ceil(LIMIT / unit.length)).slice(0, LIMIT);
+  const [out, ms] = timed(Array(16).fill(block).join("\n\n"));
+  assert.ok(ms < 8000, `${JSON.stringify(unit)} x16 ${ms.toFixed(0)}ms`);
+  assert.ok(out.includes("md-fallback"), `${JSON.stringify(unit)}: 뒤쪽 블록은 글 그대로`);
+  assert.doesNotMatch(out, /<script/i);
+}
+// 짧은 블록만 있는 긴 문서는 자르지 않는다(안전장치도 걸리지 않는다)
+const prose = Array.from({ length: 2500 }, (_, i) => `문단 ${i}: **굵게** 와 [링크](https://a.com/${i}) 그리고 \`코드\` 와 _기울임_ 이 섞인 보통 글입니다.`).join("\n\n");
+assert.ok(prose.length > 100000 - 50000);
+const [proseOut, proseMs] = timed(prose);
+assert.equal(count(proseOut, "<p>"), 2500);
+assert.ok(!proseOut.includes("md-clip") && !proseOut.includes("md-fallback"), "짧은 블록은 자르지 않는다");
+assert.ok(proseMs < 8000, `보통 글 ${proseMs.toFixed(0)}ms`);
+const exact = "가".repeat(LIMIT); // 딱 LIMIT자인 블록도 자르지 않는다
+assert.ok(!render(exact + "\n\n" + exact).includes("md-clip"));
+// 긴 블록 하나만 잘리고 앞뒤 짧은 블록은 그대로
 const lines = Array.from({ length: 2000 }, (_, i) => `줄 ${i} **굵게**`).join("\n");
-const cutOut = render(lines);
-assert.ok(cutOut.includes(NOTE));
-const lastLine = [...cutOut.matchAll(/줄 (\d+) <strong>굵게<\/strong>/g)].pop();
+const mixed = render("앞 문단\n\n" + lines + "\n\n뒤 문단");
+assert.ok(mixed.includes("앞 문단") && mixed.includes("뒤 문단"));
+assert.equal(count(mixed, NOTE), 1);
+assert.ok(mixed.indexOf(NOTE) < mixed.indexOf("뒤 문단") && mixed.indexOf(NOTE) > mixed.indexOf("앞 문단"), "안내는 잘린 자리");
+const lastLine = [...mixed.matchAll(/줄 (\d+) <strong>굵게<\/strong>/g)].pop();
 assert.ok(lastLine && +lastLine[1] > 100 && +lastLine[1] < 1999, "앞부분은 보이고 뒷부분은 없다");
-assert.ok(!cutOut.includes("**"), "줄 중간에서 자르지 않는다");
-// 코드 블록 안에서 잘려도 안내는 코드 밖에 있다
-const fenced = render("```\n" + "코드 줄\n".repeat(5000) + "```\n뒤");
-assert.ok(/<\/pre>\s*<p class="md-clip">미리보기는/.test(fenced), "안내는 코드 블록 밖");
-assert.ok(!/<pre>[^]*미리보기는[^]*<\/pre>/.test(fenced), "안내가 코드 안에 없다");
-// 안내에는 글이 끼어들지 않는다(글 안의 같은 문구·HTML은 그대로 무해화되고, 안내는 정확히 한 번)
-const inj = render('<script>alert(1)</script><img src=x onerror=alert(1)>\n' + "가".repeat(LIMIT * 2));
+assert.ok(!mixed.includes("**"), "줄 경계에서 자른다(줄 중간에서 자르지 않는다)");
+// 코드 펜스 안의 빈 줄은 블록을 나누지 않는다: 펜스 전체가 LIMIT를 넘으면 한 번 잘리고 안내는 코드 밖, 넘지 않으면 그대로
+const fenced = render("```\n" + "코드 줄\n\n".repeat(1500) + "```\n\n뒤");
+assert.equal(count(fenced, "<pre>"), 1);
+assert.ok(/<\/pre>\s*<p class="md-clip">이 문단은/.test(fenced) && fenced.includes("뒤") && !/<pre>[^]*이 문단은[^]*<\/pre>/.test(fenced), "안내는 코드 블록 밖");
+assert.ok(!render("```\n" + "가\n\n".repeat(1500) + "```\n\n" + "나".repeat(100)).includes("md-clip")); // 4500자 펜스: 안 자른다
+const small = render("```\na\n\nb\n```\n\n끝");
+assert.ok(small.includes("a\n\nb\n</code></pre>") && !small.includes("md-clip"));
+const twoGroups = render("```\n" + "가".repeat(4000) + "\n\n" + "나".repeat(4000) + "\n```"); // 빈 줄로 나뉘어도 한 블록이라 8000자 -> 잘림
+assert.equal(count(twoGroups, NOTE), 1);
+assert.ok(!twoGroups.includes("나"), "펜스 뒷부분은 잘려 나간다");
+// 안내 문구에 글이 끼어들지 않는다: 글 속의 같은 문구·HTML은 무해화되고, 자리표시처럼 보이는 글도 그대로 글자다
+const inj = render("<script>alert(1)</script><img src=x onerror=alert(1)>\nEVASCLIPq0q " + NOTE + "\n" + "가".repeat(LIMIT * 2));
 assert.doesNotMatch(inj, /<script|onerror/i);
-assert.equal(inj.split(NOTE).length - 1, 1);
-assert.doesNotMatch(render("가".repeat(LIMIT * 2)).replace(NOTE, ""), /미리보기는 앞부분/);
+assert.equal(count(inj, NOTE), 2); // 글 속 문구 하나 + 진짜 안내 하나
+assert.ok(inj.includes("EVASCLIPq0q"));
+// 한 줄이 아주 긴 블록은 글자 경계에서 자르되 이모지(서로게이트 쌍)를 반으로 가르지 않는다
+for (const pad of ["", "a"]) {
+  const emoji = render(pad + "😀".repeat(LIMIT));
+  assert.doesNotMatch(emoji, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+  assert.equal(count(emoji, NOTE), 1);
+}
 // 깊게 중첩돼 marked가 호출 깊이를 넘어도 던지지 않고 글 그대로(HTML 아님) 보여 준다
 const deep = render("> ".repeat(2900) + "<b>x</b>");
 assert.ok(deep.includes("md-fallback") && !deep.includes("<b>"), "깊은 중첩은 글 그대로");

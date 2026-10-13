@@ -35,26 +35,66 @@ marked.use({
   },
 });
 
-// marked의 짝 없는 강조(* _ ~~)·중첩 처리는 글 길이의 제곱에 가깝게 느려져, 긴 메모의 미리보기가 보는 모두의 화면을 멈춘다
-// (node+jsdom 실측: '*abc '·'**a ' 같은 반복이 2만 자 1~5초, 5만 자 12~32초, 10만 자 37~99초). 6000자는 퍼징 최악이 약 0.5초
+
+// marked의 짝 없는 강조(* _ ~~)·링크 처리는 한 문단(빈 줄 사이 덩어리) 안에서 글 길이의 제곱에 가깝게 느려진다(node+jsdom 실측: 6000자 한 문단 최악 약 0.3~1초).
+// 문단이 길면 보는 모두의 화면이 멈추므로 ① 한 블록이 LIMIT자를 넘으면 그 블록만 잘라 그리고(블록이 모두 짧으면 전체가 길어도 자르지 않는다)
+// ② 문단별 비용 추정(서식 기호 덩어리 수 x 글자 수)의 합이 BUDGET을 넘게 되는 블록부터는 서식 없이 글 그대로 보여 준다.
 const LIMIT = 6000;
-// shortcut: 앞 LIMIT자만 그린다. 긴 메모 전체를 미리보기로 보려면 선형 시간 파서가 필요
-const clip = (text) => {
-  if (text.length <= LIMIT) return text;
-  const nl = text.lastIndexOf("\n", LIMIT); // 줄 경계에서 자른다(줄바꿈이 없으면 LIMIT자, 이모지 반쪽은 뺀다)
-  return nl > 0 ? text.slice(0, nl) : text.slice(0, LIMIT).replace(/[\uD800-\uDBFF]$/, "");
+const BUDGET = 2e7; // 실측 비용은 대략 5e-8~1.5e-7초 x 추정치(느린 상태 기준 최대 약 3초). 6000자 이하 한 블록(덩어리 최대 3000 x 6000 = 1.8e7)은 항상 이 안이라 짧은 글은 검사를 건너뛴다
+const DELIM = /[*_~`[<]+/g; // 연속한 서식 기호 하나를 한 덩어리로 센다(**a 는 1개)
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+// 코드 펜스 상태를 한 줄 진행한다: 열려 있으면 그 표시(```·~~~), 아니면 null. 펜스 안의 빈 줄은 블록을 나누지 않는다
+const step = (fence, line) => {
+  const m = FENCE.exec(line);
+  if (!fence) return m && !(m[1][0] === "`" && m[2].includes("`")) ? m[1] : null; // 한 줄 안에서 닫히는 ```x```는 펜스가 아니다
+  return m && m[1][0] === fence[0] && m[1].length >= fence.length && !m[2].trim() ? null : fence;
 };
+const openFence = (lines) => lines.reduce(step, null);
+const cutLine = (s, limit) => s.slice(0, limit).replace(/[\uD800-\uDBFF]$/, ""); // 이모지 반쪽은 뺀다
 const esc = (t) => t.replace(/[&<>"']/g, (c) => "&#" + c.charCodeAt(0) + ";");
+
+// 긴 블록은 줄 경계(줄이 하나뿐이면 글자 경계)에서 자르고 열린 코드 펜스를 닫는다. 안내·글 그대로 보일 블록은 자리표시(token)로 바꿔 두고
+// subs[i] = [html, 글]에 담는다: 자리표시는 렌더마다 새로 뽑은 영숫자라 글이 미리 적어 둘 수 없고, 안내 html은 상수다
+function prepare(text, limit, token, note) {
+  const out = [], subs = [];
+  let block = [], size = 0, fence = null, spent = 0;
+  const hold = (html, plain) => `${token}q${subs.push([html, plain]) - 1}q`;
+  const flush = () => {
+    if (!block.length) return;
+    let kept = block, clipped = size > limit;
+    if (clipped) {
+      kept = []; let n = 0;
+      for (const l of block) { const w = l.length + (kept.length ? 1 : 0); if (n + w > limit) break; kept.push(l); n += w; }
+      if (!kept.length) kept = [cutLine(block[0], limit)];
+    }
+    const body = kept.join("\n"), r = (body.match(DELIM) || []).length;
+    if (spent + r * body.length > BUDGET) out.push(hold(`<pre class="md-fallback">${esc(body)}</pre>`, body));
+    else { spent += r * body.length; out.push(...kept); const open = clipped && openFence(kept); if (open) out.push(open); }
+    if (clipped) out.push("", hold(`<p class="md-clip">${note}</p>`, note));
+    block = []; size = 0;
+  };
+  for (const line of text.split("\n")) {
+    if (!fence && !line.trim()) { flush(); out.push(line); continue; }
+    fence = step(fence, line);
+    size += line.length + (block.length ? 1 : 0); block.push(line);
+  }
+  flush();
+  return { src: out.join("\n"), subs };
+}
 
 // breaks: 메모는 줄 단위로 쓰므로 줄바꿈 한 번도 줄바꿈으로 보인다
 const parse = (text) => DOMPurify.sanitize(marked.parse(text, { gfm: true, breaks: true, async: false }), OPTIONS);
-const render = (input) => {
-  const text = String(input), head = clip(text);
-  let html;
-  try { html = parse(head); }
-  catch { html = '<pre class="md-fallback">' + esc(head) + "</pre>"; } // 깊게 중첩된 > · 1. 는 marked가 호출 깊이를 넘는다: 글 그대로 보여 준다
-  // 안내는 마크다운 밖에서 붙인다: 잘린 곳이 코드 블록 안이어도 안내가 그 안에 들어가지 않고, 숫자는 상수라 주입이 없다
-  return head.length < text.length ? html + `<p class="md-clip">미리보기는 앞부분 ${LIMIT}자까지만 표시합니다. 전체는 편집 화면에서 볼 수 있습니다.</p>` : html;
+const render = (input, limit = LIMIT) => {
+  const text = String(input);
+  if (text.length <= limit) { // 짧은 글: 한 블록이 limit 이하라 자르지도, 비용을 따지지도 않는다
+    try { return parse(text); } catch { return '<pre class="md-fallback">' + esc(text) + "</pre>"; }
+  }
+  const token = "EVASCLIP" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+  const note = `이 문단은 길어서 앞부분 ${limit}자까지만 미리보기에 표시합니다. 전체는 편집 화면에서 볼 수 있습니다.`;
+  const { src, subs } = prepare(text, limit, token, note);
+  const slot = new RegExp(`(?:<p>)?${token}q(\\d+)q(?:</p>)?`, "g");
+  try { return parse(src).replace(slot, (_, i) => subs[i][0]); }
+  catch { return '<pre class="md-fallback">' + esc(src.replace(slot, (_, i) => subs[i][1])) + "</pre>"; } // 깊게 중첩된 > · 1. 는 marked가 호출 깊이를 넘는다: 글 그대로 보여 준다
 };
 
 window.EvasMarkdown = { render, LIMIT };
