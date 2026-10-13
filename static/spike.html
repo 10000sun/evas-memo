@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>실시간 편집 확인(임시)</title>
+<style>#ed{border:1px solid #888;min-height:200px}</style>
+<p id="me"></p><div id="ed"></div>
+<script src="/static/vendor/editor.bundle.js"></script>
+<script>
+  const q = new URLSearchParams(location.search);
+  const name = q.get("name") || "사용자" + Math.floor(Math.random() * 100);
+  const color = q.get("color") || "#" + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0");
+  me.textContent = name;
+  window.ed = EvasEditor.create({ parent: document.getElementById("ed"), memoId: 1, user: { name, color } });
+</script>

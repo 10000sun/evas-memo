@@ -1,0 +1,16 @@
+{
+  "name": "evas-memo-tools",
+  "private": true,
+  "description": "에디터 번들 빌드용(결과물은 ../static/vendor/editor.bundle.js)",
+  "scripts": { "build": "esbuild editor-entry.js --bundle --minify --outfile=../static/vendor/editor.bundle.js" },
+  "dependencies": {
+    "@codemirror/state": "^6.5.0",
+    "@codemirror/view": "^6.36.0",
+    "codemirror": "^6.0.1",
+    "y-codemirror.next": "^0.3.5",
+    "y-protocols": "^1.0.6",
+    "y-websocket": "^2.1.0",
+    "yjs": "^13.6.0"
+  },
+  "devDependencies": { "esbuild": "^0.25.0" }
+}

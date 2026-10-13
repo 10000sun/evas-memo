@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+httpx
+pytest
+itsdangerous
+python-dotenv
+pywebpush
+pycrdt>=0.14
+pycrdt-websocket>=0.16
