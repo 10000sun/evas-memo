@@ -207,4 +207,6 @@ assert.equal(sets, before); // 이미 안 겹치면 바꾸지 않는다(깜빡�
   assert.doesNotMatch(out, /onerror|<script|href="user:/i);
   assert.match(render("[링크](https://a.com)"), /href="https:\/\/a\.com"/); // 일반 링크는 그대로
 }
+assert.match(render("[링크](https://a.com)"), /title="클릭하면 새 탭에서 열립니다"/); // 미리보기 링크에 올리면 여는 방법 안내
+assert.match(render('<a href="https://a.com" title="내 제목">x</a>'), /title="내 제목"/); // 글쓴이가 정한 title은 덮어쓰지 않는다
 console.log("ok");

@@ -96,7 +96,7 @@ def test_admin_space_ui_rules(client):
 
 def test_index_has_share_ui(client):
     html = client.get("/").text
-    for el in ('id="share-dlg"', 'id="e-share"', 'id="f-share"', 'id="sh-save"', 'name="sh-mode"'):
+    for el in ('id="share-dlg"', 'id="e-share"', 'id="f-share"', 'id="sh-save"', 'data-vis="restricted"'):
         assert el in html, el
     js = client.get("/app.js").text
     assert "/share-with" in js and "/api/members/pick" in js and "user:" in js or "kind === \"user\"" in js

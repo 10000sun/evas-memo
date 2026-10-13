@@ -6,6 +6,7 @@ import { urlAtStart } from "./url-rule.mjs";
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   // href가 있으면 태그와 무관하게 새 탭으로: 같은 탭이 외부 사이트로 바뀌거나(피싱) Referer가 새지 않게
   if (node.hasAttribute("href")) { node.setAttribute("target", "_blank"); node.setAttribute("rel", "noopener noreferrer"); }
+  if (node.hasAttribute("href") && !node.hasAttribute("title")) node.setAttribute("title", "클릭하면 새 탭에서 열립니다"); // 올려 두면 보이는 안내
   // input은 할 일 체크박스(읽기 전용)만 남긴다: type=image 같은 것은 외부 이미지를 불러온다
   if (node.tagName === "INPUT") node.getAttribute("type") === "checkbox" ? node.setAttribute("disabled", "") : node.remove();
   if (node.tagName === "IMG") node.setAttribute("referrerpolicy", "no-referrer"); // 외부 이미지에 어느 메모를 보는지 안 알린다

@@ -86,14 +86,15 @@
 <dialog id="share-dlg" class="help share">
   <h2 id="sh-title">공개 범위</h2>
   <p id="sh-note" class="meta"></p>
-  <div class="sh-modes" role="radiogroup" aria-label="공개 범위">
-    <label><input type="radio" name="sh-mode" value="all"> 전체 공개(로그인한 모든 사람)</label>
-    <label><input type="radio" name="sh-mode" value="restricted"> 선택한 사람만(관리자는 항상 볼 수 있습니다)</label>
+  <div class="tabs sh-seg" role="group" aria-label="공개 범위">
+    <button type="button" data-vis="all" aria-pressed="true">전체 공개</button>
+    <button type="button" data-vis="restricted" aria-pressed="false">선택한 사람만</button>
   </div>
+  <p id="sh-hint" class="meta"></p>
   <div id="sh-people" class="sh-people">
-    <input id="sh-q" type="search" placeholder="이름으로 찾기 (한 번이라도 접속한 사람)" aria-label="사람 찾기" autocomplete="off">
+    <input id="sh-q" type="search" placeholder="이름으로 찾기" aria-label="사람 찾기" autocomplete="off">
     <ul id="sh-found" class="sh-list"></ul>
-    <p class="meta">고른 사람 <span id="sh-count">0</span>명 — 이 사람들은 보고 고칠 수 있습니다(보기 전용 계정은 보기만)</p>
+    <p class="meta">선택한 사람 <span id="sh-count">0</span>명</p>
     <ul id="sh-chosen" class="sh-list chosen"></ul>
   </div>
   <div class="btns"><button type="button" id="sh-cancel" class="btn ghost">닫기</button><span></span><button type="button" id="sh-save" class="btn primary">저장</button></div>

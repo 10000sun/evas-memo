@@ -520,40 +520,49 @@ $("e-del").onclick = async () => {
 
 // --- 공개 범위(공동 메모·폴더): 전체 공개 또는 한 번이라도 접속한 사람 중 고른 사람만. 관리자는 항상 보인다 ---
 let sh = null; // {type: "memo"|"folder", item, ro, chosen: Map(id -> 이름)}
-let shTimer, shSeq = 0;
-const shMode = () => document.querySelector("input[name=sh-mode]:checked").value;
+let shAll = []; // 이 창을 열 때 한 번 받아 온 접속한 사람 전원(이름 입력에 따라 화면에서 바로 거른다)
+const shMode = () => document.querySelector("[data-vis][aria-pressed=true]").dataset.vis;
+const SH_HINT = { all: "로그인한 모든 사람이 볼 수 있습니다.", restricted: "고른 사람과 관리자만 볼 수 있고, 고른 사람은 고칠 수도 있습니다." };
+function shSetMode(v) {
+  for (const b of document.querySelectorAll("[data-vis]")) b.setAttribute("aria-pressed", b.dataset.vis === v);
+  $("sh-hint").textContent = SH_HINT[v];
+}
 function shPaint() {
   $("sh-people").hidden = shMode() !== "restricted";
   $("sh-count").textContent = sh.chosen.size;
   $("sh-chosen").replaceChildren(...[...sh.chosen].map(([id, name]) => el("li", {}, el("span", { textContent: name }),
     ...(sh.ro ? [] : [el("button", { type: "button", className: "btn ghost", textContent: "빼기", onclick: () => { sh.chosen.delete(id); shPaint(); shFind(); } })]))));
 }
-async function shFind() {
-  const n = ++shSeq, q = $("sh-q").value.trim();
-  let rows;
-  try { rows = await api(`/api/members/pick?q=${encodeURIComponent(q)}&limit=20`); } catch { rows = []; }
-  if (n !== shSeq || !sh) return;
-  rows = Array.isArray(rows) ? rows.filter((r) => typeof r?.id === "string" && typeof r.name === "string" && !sh.chosen.has(r.id)) : [];
-  $("sh-found").replaceChildren(...rows.map((r) => el("li", {}, el("span", { textContent: r.name }),
+// 처음(아무것도 안 적었을 때)에는 고르지 않은 사람 전원이 보이고, 이름을 적을수록 포함하는 사람만 남는다
+function shFind() {
+  if (!sh) return;
+  const q = $("sh-q").value.trim().toLowerCase();
+  const rows = shAll.filter((r) => !sh.chosen.has(r.id) && (!q || r.name.toLowerCase().includes(q)));
+  $("sh-found").replaceChildren(...(rows.length ? [] : [el("li", { className: "none" }, el("span", { className: "meta", textContent: q ? "찾는 이름이 없습니다" : "고를 사람이 없습니다" }))]),...rows.map((r) => el("li", {}, el("span", { textContent: r.name }),
     ...(sh.ro ? [] : [el("button", { type: "button", className: "btn ghost", textContent: "추가", onclick: () => { sh.chosen.set(r.id, r.name); shPaint(); shFind(); } })]))));
 }
 function shOpen(type, item) {
   if (!item) return;
   const ro = !item.can_share || item.inherited;
-  sh = { type, item, ro, chosen: new Map((item.viewers || []).map((v) => [v.id, v.name])) };
+  const s0 = sh = { type, item, ro, chosen: new Map((item.viewers || []).map((v) => [v.id, v.name])) }; // s0: 늦게 온 응답이 다른 창에 끼어들지 않게
   $("sh-title").textContent = `공개 범위 — ${type === "folder" ? "폴더" : "메모"} ${type === "folder" ? folderPath(item.id) : item.title || "제목 없음"}`;
   $("sh-note").textContent = item.inherited ? "이 항목은 위쪽 폴더의 공개 범위를 따릅니다. 폴더에서 바꾸세요."
     : !item.can_share ? "공개 범위는 만든 사람과 관리자만 바꿀 수 있습니다."
     : type === "folder" ? "비공개로 하면 이 폴더와 하위 폴더, 안의 모든 메모에 적용됩니다." : "";
-  document.querySelector(`input[name=sh-mode][value=${item.visibility}]`).checked = true;
-  for (const r of document.querySelectorAll("input[name=sh-mode]")) r.disabled = ro;
+  shSetMode(item.visibility);
+  for (const b of document.querySelectorAll("[data-vis]")) b.disabled = ro;
   $("sh-q").value = ""; $("sh-q").disabled = ro; $("sh-save").hidden = ro;
-  shPaint(); shFind(); $("share-dlg").showModal();
+  shAll = []; shPaint(); shFind(); $("share-dlg").showModal();
+  api("/api/members/pick?limit=200").then((rows) => {
+    if (sh !== s0 || !Array.isArray(rows)) return;
+    shAll = rows.filter((r) => typeof r?.id === "string" && typeof r.name === "string");
+    shFind();
+  }).catch(() => { if (sh === s0) $("sh-found").replaceChildren(el("li", {}, el("span", { className: "meta", textContent: "사람 목록을 불러오지 못했습니다" }))); });
 }
-for (const r of document.querySelectorAll("input[name=sh-mode]")) r.onchange = () => { shPaint(); shFind(); };
-$("sh-q").oninput = () => { clearTimeout(shTimer); shTimer = setTimeout(shFind, 250); };
+for (const b of document.querySelectorAll("[data-vis]")) b.onclick = () => { shSetMode(b.dataset.vis); shPaint(); shFind(); };
+$("sh-q").oninput = shFind; // 목록은 이미 받아 둬서 입력 즉시 줄어든다
 $("sh-cancel").onclick = () => $("share-dlg").close();
-$("share-dlg").onclose = () => { sh = null; shSeq++; };
+$("share-dlg").onclose = () => { sh = null; shAll = []; };
 $("sh-save").onclick = async () => {
   const s = sh, mode = shMode();
   if (mode === "all" && s.item.visibility === "restricted" && !confirm("모든 사람에게 보이게 됩니다. 전체 공개로 바꿀까요?")) return;
