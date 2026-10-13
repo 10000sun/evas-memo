@@ -16,7 +16,9 @@ async function refreshBell() {
   try {
     const { items, unread, rev } = await api("/api/activity");
     // 공동 메모가 바뀌었으면 목록을 새로 받는다(첫 호출은 기준만 잡는다). 개인 메모는 rev에 안 잡혀 개인 탭이면 늘 받는다
+    // 폴더 변경은 rev에 안 잡혀 폴더 목록은 매번 받는다(보던 폴더가 지워졌으면 refreshFolders가 전체로 돌리고 목록도 새로 받는다)
     if (lastRev !== null && (rev !== lastRev || tab === "personal")) refreshList();
+    else if (lastRev !== null) refreshFolders().then((gone) => gone && refreshList());
     lastRev = rev;
     $("bell-dot").hidden = !unread;
     $("bell").setAttribute("aria-label", unread ? `알림, 안 읽음 ${unread}개` : "알림");

@@ -68,6 +68,20 @@ code { background: var(--bg); padding: 1px 6px; border-radius: 6px; font-size: .
 .legend i { width: 8px; height: 8px; border-radius: 50%; }
 @media (min-width: 700px) { .legend { flex-wrap: wrap; overflow: visible; } }
 
+/* 폴더 줄: 전체 · 폴더 없음 · 폴더들 · + 새 폴더. 하위 폴더 줄은 들여서 이어 붙인다 */
+.folders { display: flex; gap: 6px; overflow-x: auto; padding: 2px 0 8px; scrollbar-width: none; }
+.folders::-webkit-scrollbar { display: none; }
+.folders.sub { padding-left: 14px; border-left: 2px solid var(--line); margin-left: 6px; }
+.folders button { flex: none; max-width: 14em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-height: 32px; padding: 0 12px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: .85rem; cursor: pointer; }
+.folders button:hover { border-color: var(--muted); }
+.folders button[aria-pressed="true"] { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 12%, transparent); color: var(--primary); font-weight: 600; }
+.folders button.add { color: var(--primary); border-style: dashed; }
+.folder-tools { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0 0 8px; }
+.folder-tools .meta { font-size: .85rem; font-weight: 600; color: var(--text); margin-right: auto; overflow-wrap: anywhere; }
+@media (min-width: 700px) { .folders { flex-wrap: wrap; overflow: visible; } }
+.memo .path { color: var(--primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* 카드·알림 */
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; margin-bottom: 16px; }
 .notice { padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); margin-bottom: 12px; }
@@ -203,5 +217,6 @@ label.inline { flex-direction: row; align-items: center; gap: 8px; }
   .who { display: none; } /* 둘째 줄에 아이콘이 7개까지 늘어나 자리가 모자란다 */
   .card { padding: 6px; border-radius: 12px; }
   .memo-list { grid-template-columns: 1fr; }
+  .folder-tools .meta { flex-basis: 100%; } /* 폴더 경로 한 줄, 버튼은 그 아래 한 줄 */
   dialog { padding: 18px; }
 }

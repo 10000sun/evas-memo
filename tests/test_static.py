@@ -38,3 +38,10 @@ def test_index_has_preview_toggle(client):
     t = client.get("/").text
     assert 'data-mode="preview"' in t and 'id="e-preview"' in t
     assert "vendor/markdown.bundle.js" in t
+
+
+def test_index_has_folder_ui(client):
+    t = client.get("/").text
+    for i in ("folders", "subfolders", "folder-tools", "f-rename", "f-delete", "e-folder"):
+        assert f'id="{i}"' in t, i
+    assert t.index('id="folders"') < t.index('id="memos"')  # 폴더 줄은 목록 위

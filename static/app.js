@@ -2,10 +2,31 @@
 let cats = [], me = null, memos = [], shown = new Set(); // shown: 범례에서 고른 분류(비어 있으면 전체)
 let tab = "shared", cur = null, ed = null, openReq = 0, titleTimer = null, deleting = false, focusTitle = false;
 try { tab = localStorage.getItem("tab") || tab; } catch { /* 저장이 막혀 있으면 공동 탭부터 */ }
+// 메모 종류별 화면 규칙. 종류가 늘면 여기에 한 줄 더한다(scope: 그 종류 본문의 @ 힌트가 부르는 /api/link/memos 범위)
+const KINDS = {
+  personal: { name: "개인 메모", empty: "개인 메모가 없습니다. + 메모로 새로 만드세요.", scope: "all" },
+  shared: { name: "공동 메모", empty: "공동 메모가 없습니다.", scope: "shared" },
+};
+if (!KINDS[tab]) tab = "shared";
 const saveTab = () => { try { localStorage.setItem("tab", tab); } catch { /* 이번 화면에서만 기억 */ } };
+// 탭(종류)이 바뀌면 폴더 선택은 처음(전체)부터
+function setTab(k) {
+  if (k !== tab) { tab = k; folders = []; fsel = ""; }
+  saveTab(); syncTabs();
+}
 const canEdit = () => me && me.role !== "viewer";
 const canEditMemo = (m) => m.kind === "personal" || canEdit(); // 서버 ws.can_edit와 같은 규칙
 const catOf = (id) => cats.find((c) => c.id === id);
+// 폴더(서버 folders.py와 같은 규칙): 개인 폴더는 본인 것만 보이고 본인이 다 한다. 그 밖은 편집자 이상이 만들고 이름을 바꾸며,
+// 지우기는 만든 사람·관리자
+let folders = [], fsel = ""; // folders: 지금 종류의 폴더들. fsel: "" 전체, "none" 폴더 없음, 숫자 = 폴더 id
+const canFolder = (kind) => kind === "personal" || canEdit();
+const canDelFolder = (f) => f.kind === "personal" || f.created_by === me.id || me.role === "admin";
+const folderOf = (id) => folders.find((f) => f.id === id);
+const folderPath = (id) => {
+  const f = folderOf(id), p = f && f.parent_id && folderOf(f.parent_id);
+  return !f ? "" : p ? `${p.name} / ${f.name}` : f.name;
+};
 // 서버는 시간대 없는 서버 현지 시각(한국)으로 저장한다 -> 그대로 현지 시각으로 읽는다
 const when = (iso) => new Date(iso).toLocaleString("ko-KR", { dateStyle: "medium", timeStyle: "short" });
 const el = (tag, props = {}, ...kids) => {
@@ -33,8 +54,10 @@ async function refreshList() {
   if (cur) return refreshCur();
   if ($("list-view").hidden) return;
   const n = ++listReq, q = $("search").value.trim(); // n: 늦게 온 옛 응답이 새 결과를 덮지 않게
+  await refreshFolders(); // 보고 있던 폴더가 사라졌으면 여기서 전체로 돌아간다
+  if (n !== listReq) return;
   let rows;
-  try { rows = await api(`/api/memos?kind=${tab}` + (q ? "&q=" + encodeURIComponent(q) : "")); }
+  try { rows = await api(`/api/memos?kind=${tab}` + (fsel !== "" ? "&folder_id=" + fsel : "") + (q ? "&q=" + encodeURIComponent(q) : "")); }
   catch (e) { if (n === listReq) toast("목록을 불러오지 못했습니다: " + e.message); return; }
   if (n !== listReq) return;
   memos = rows;
@@ -46,6 +69,7 @@ function card(m) {
   const a = el("a", { href: "#" + m.id, className: "memo" },
     el("strong", { textContent: m.title || "제목 없음" }),
     el("p", { className: "preview", textContent: m.body_text }),
+    ...(folderPath(m.folder_id) ? [el("div", { className: "meta path", textContent: folderPath(m.folder_id) })] : []),
     el("div", { className: "meta" },
       ...(c ? [el("i", { className: "dot", style: `background:${c.color}` }), c.name + " · "] : []),
       `${m.updated_name || "알 수 없음"} · ${when(m.updated_at)}`));
@@ -55,16 +79,91 @@ function card(m) {
 
 function renderList() {
   const list = memos.filter((m) => !shown.size || shown.has(m.category_id));
-  const empty = shown.size || $("search").value.trim() ? "조건에 맞는 메모가 없습니다"
-    : tab === "personal" ? "개인 메모가 없습니다. + 메모로 새로 만드세요." : "공동 메모가 없습니다.";
+  const empty = shown.size || $("search").value.trim() || fsel !== "" ? "조건에 맞는 메모가 없습니다" : KINDS[tab].empty;
   $("memos").replaceChildren(...(list.length ? list.map(card) : [el("li", { className: "empty", textContent: empty })]));
+}
+
+// --- 폴더 ---
+let folderReq = 0;
+// 지금 종류의 폴더를 다시 받는다. 보던 폴더가 다른 곳에서 지워졌으면 전체로 돌리고 true
+async function refreshFolders() {
+  const kind = tab, n = ++folderReq; // 편집 중에는 tab이 열린 메모의 종류다
+  let rows;
+  try { rows = await api(`/api/folders?kind=${kind}`); } catch { return false; } // 다음 주기에 다시
+  if (n !== folderReq || kind !== tab) return false;
+  folders = rows;
+  const gone = typeof fsel === "number" && !folderOf(fsel);
+  if (gone) fsel = "";
+  paintFolders();
+  return gone;
+}
+function folderBtn(label, pressed, onclick, cls = "") {
+  const b = el("button", { type: "button", className: cls, textContent: label, onclick });
+  if (pressed != null) b.setAttribute("aria-pressed", pressed);
+  return b;
+}
+function pickFolder(v) { fsel = v; paintFolders(); memos = []; renderList(); refreshList(); }
+function paintFolders() {
+  const sel = typeof fsel === "number" ? folderOf(fsel) : null;
+  const root = sel && (sel.parent_id ? folderOf(sel.parent_id) : sel); // 고른 폴더의 맨 위 폴더
+  const make = canFolder(tab);
+  $("folders").replaceChildren(
+    folderBtn("전체", fsel === "", () => pickFolder("")),
+    folderBtn("폴더 없음", fsel === "none", () => pickFolder("none")),
+    ...folders.filter((f) => !f.parent_id).map((f) => folderBtn(f.name, f === root, () => pickFolder(f.id))),
+    ...(make ? [folderBtn("+ 새 폴더", null, () => newFolder(null), "add")] : []));
+  // 맨 위 폴더를 고르면 그 하위 폴더 줄. 하위 폴더 아래로는 만들 수 없어 하위 폴더를 고른 동안에는 + 새 폴더가 없다
+  const subs = root ? folders.filter((f) => f.parent_id === root.id) : [];
+  const subAdd = make && sel === root && sel;
+  $("subfolders").replaceChildren(...subs.map((f) => folderBtn(f.name, f === sel, () => pickFolder(f.id))),
+    ...(subAdd ? [folderBtn("+ 새 폴더", null, () => newFolder(root.id), "add")] : []));
+  $("subfolders").hidden = !subs.length && !subAdd;
+  $("folder-tools").hidden = !sel;
+  if (sel) {
+    $("folder-name").textContent = folderPath(sel.id);
+    $("f-rename").hidden = !canFolder(sel.kind);
+    $("f-delete").hidden = !canDelFolder(sel);
+  }
+  if (cur) paintFolderSelect();
+}
+async function newFolder(parentId) {
+  const name = prompt(parentId ? `'${folderOf(parentId).name}' 안에 만들 하위 폴더 이름 (30자까지)` : "새 폴더 이름 (30자까지)");
+  if (!name || !name.trim()) return;
+  try {
+    const f = await api("/api/folders", { method: "POST", body: JSON.stringify({ kind: tab, name, parent_id: parentId }) });
+    pickFolder(f.id);
+  } catch (e) { toast(e.message); refreshList(); }
+}
+$("f-rename").onclick = async () => {
+  const f = folderOf(fsel), name = f && prompt("폴더 이름 (30자까지)", f.name);
+  if (!name || !name.trim() || name.trim() === f.name) return;
+  try { await api(`/api/folders/${f.id}`, { method: "PUT", body: JSON.stringify({ name }) }); }
+  catch (e) { toast(e.message); }
+  refreshList();
+};
+$("f-delete").onclick = async () => {
+  const f = folderOf(fsel);
+  if (!f || !confirm(`'${folderPath(f.id)}' 폴더를 삭제할까요?\n${f.parent_id ? "" : "하위 폴더도 함께 삭제됩니다. "}안의 메모는 '폴더 없음'으로 남습니다.`)) return;
+  try { await api(`/api/folders/${f.id}`, { method: "DELETE" }); toast("폴더를 삭제했습니다"); fsel = ""; }
+  catch (e) { toast(e.message); }
+  refreshList();
+};
+// 편집 화면의 폴더 선택: 메모와 같은 종류의 폴더만, 하위 폴더는 들여쓰기
+function paintFolderSelect() {
+  const opts = [new Option("폴더 없음", "")];
+  for (const f of folders.filter((x) => !x.parent_id)) {
+    opts.push(new Option(f.name, f.id));
+    for (const s of folders.filter((x) => x.parent_id === f.id)) opts.push(new Option("    " + s.name, s.id));
+  }
+  $("e-folder").replaceChildren(...opts);
+  $("e-folder").value = cur.folder_id ?? "";
 }
 
 function syncTabs() {
   for (const b of document.querySelectorAll("[data-tab]")) b.setAttribute("aria-pressed", b.dataset.tab === tab);
 }
 for (const b of document.querySelectorAll("[data-tab]")) b.onclick = () => {
-  tab = b.dataset.tab; saveTab(); syncTabs(); memos = []; renderList(); refreshList();
+  setTab(b.dataset.tab); memos = []; paintFolders(); renderList(); refreshList();
 };
 let searchTimer;
 $("search").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(refreshList, 250); };
@@ -72,7 +171,8 @@ $("search").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeou
 $("add").onclick = async () => {
   try {
     const m = await api("/api/memos", { method: "POST", body: JSON.stringify({
-      kind: cur ? cur.kind : tab, category_id: shown.size === 1 ? [...shown][0] : null }) }); // 분류 하나로 거르고 있으면 그 분류로
+      kind: cur ? cur.kind : tab, category_id: shown.size === 1 ? [...shown][0] : null, // 분류 하나로 거르고 있으면 그 분류로
+      folder_id: !cur && typeof fsel === "number" ? fsel : null }) }); // 목록에서 폴더를 보고 있으면 그 폴더에
     focusTitle = true;
     location.hash = m.id;
   } catch (e) { toast(e.message); }
@@ -95,11 +195,12 @@ async function saveTitle(keepalive) {
 }
 $("e-title").oninput = () => { status("저장 중…"); clearTimeout(titleTimer); titleTimer = setTimeout(saveTitle, 700); };
 $("e-cat").onchange = () => put({ category_id: $("e-cat").value ? +$("e-cat").value : null });
+$("e-folder").onchange = () => put({ folder_id: $("e-folder").value ? +$("e-folder").value : null }).then(refreshFolders);
 addEventListener("pagehide", () => saveTitle(true));
 
 function paintMemo() {
   const m = cur, shared = m.kind === "shared";
-  $("e-kind").textContent = shared ? "공동 메모" : "개인 메모";
+  $("e-kind").textContent = KINDS[m.kind].name;
   $("e-kind").classList.toggle("shared", shared);
   $("e-move").hidden = shared || !canEdit(); // 공동으로 옮기기는 편집자 이상(서버 규칙)
   $("e-copy").hidden = !shared;
@@ -110,12 +211,14 @@ function paintMemo() {
 function fillForm() {
   if (!titleTimer && document.activeElement !== $("e-title")) $("e-title").value = cur.title;
   $("e-cat").value = cur.category_id ?? "";
+  paintFolderSelect();
   paintMemo();
 }
 
-// 20초 주기: 다른 사람이 바꾼 제목·분류를 편집 중인 화면에도 반영한다(본문은 실시간 연결이 맞춘다)
+// 20초 주기: 다른 사람이 바꾼 제목·분류·폴더를 편집 중인 화면에도 반영한다(본문은 실시간 연결이 맞춘다)
 async function refreshCur() {
   const id = cur.id;
+  refreshFolders();
   try { const m = await api(`/api/memos/${id}`); if (cur && cur.id === id) { cur = m; fillForm(); } }
   catch { /* 지워졌으면 실시간 연결이 알려준다 */ }
 }
@@ -125,12 +228,13 @@ async function openMemo(id) {
   let m;
   try { m = await api(`/api/memos/${id}`); } catch { if (n === openReq) leave("메모가 없거나 볼 수 없습니다"); return; }
   if (n !== openReq) return;
-  cur = m; tab = m.kind; saveTab(); syncTabs();
+  cur = m; setTab(m.kind);
   $("e-cat").replaceChildren(new Option("미분류", ""), ...cats.map((c) => new Option(c.name, c.id)));
   $("e-title").value = m.title;
   fillForm();
+  refreshFolders();
   const editable = canEditMemo(m);
-  $("e-title").disabled = $("e-cat").disabled = !editable;
+  $("e-title").disabled = $("e-cat").disabled = $("e-folder").disabled = !editable;
   $("e-body").inert = !editable; // 보기 전용: 서버가 편집을 버리므로 입력 자체를 막는다
   ed = EvasEditor.create({ parent: $("e-body"), memoId: id, user: { name: me.name, color: colorOf(me.id) } });
   watch(ed, id);
@@ -204,7 +308,7 @@ $("e-move").onclick = async () => {
   await saveTitle();
   try {
     cur = await api(`/api/memos/${cur.id}/share`, { method: "POST" });
-    tab = "shared"; saveTab(); syncTabs(); paintMemo();
+    setTab(cur.kind); fillForm(); refreshFolders(); // 옮기면 폴더는 '폴더 없음'(서버)
     toast("공동 메모로 옮겼습니다");
   } catch (e) { toast(e.message); }
 };
