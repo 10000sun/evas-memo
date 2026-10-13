@@ -8,6 +8,7 @@ import { yCollab } from "y-codemirror.next";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { HighlightStyle, indentUnit, syntaxHighlighting, syntaxTree } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
+import { findUrls } from "./url-rule.mjs";
 
 // 마크다운 입력 강조. 색은 style.css 변수를 써서 라이트·다크를 따라간다
 const mdHighlight = HighlightStyle.define([
@@ -22,14 +23,7 @@ const mdHighlight = HighlightStyle.define([
 ]);
 
 // 본문의 http(s) 주소(마크다운 링크의 주소 포함): 밑줄·링크 색 + 바로 뒤 "↗" 버튼(문서 밖 위젯)으로 새 탭 열기.
-// 글자 클릭은 편집(커서)용으로 두고, PC는 Ctrl/Cmd+클릭으로도 연다. 정규식이 http(s)만 잡아 다른 스킴은 위젯도 없다
-const URL_RE = /https?:\/\/[^\s<>()[\]"'`]+/g;
-function* urlsIn(text, base) {
-  for (const m of text.matchAll(URL_RE)) {
-    const url = m[0].replace(/[.,;:!?]+$/, ""); // 문장 끝 부호는 주소가 아니다
-    yield { from: base + m.index, to: base + m.index + url.length, url };
-  }
-}
+// 글자 클릭은 편집(커서)용으로 두고, PC는 Ctrl/Cmd+클릭으로도 연다. 주소 규칙(url-rule.mjs)이 http(s)만 잡아 다른 스킴은 위젯도 없다
 const openUrl = (url) => window.open(url, "_blank", "noopener,noreferrer");
 class OpenLink extends WidgetType {
   constructor(url) { super(); this.url = url; }
@@ -47,7 +41,7 @@ const urlMark = Decoration.mark({ class: "cm-url" });
 function linkDecos(view) {
   const b = new RangeSetBuilder();
   for (const { from, to } of view.visibleRanges)
-    for (const u of urlsIn(view.state.sliceDoc(from, to), from)) {
+    for (const u of findUrls(view.state.sliceDoc(from, to), from)) {
       b.add(u.from, u.to, urlMark);
       b.add(u.to, u.to, Decoration.widget({ widget: new OpenLink(u.url), side: 1 }));
     }
@@ -64,7 +58,7 @@ const links = ViewPlugin.fromClass(class {
       const pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
       if (pos == null) return false;
       const line = view.state.doc.lineAt(pos);
-      for (const u of urlsIn(line.text, line.from)) if (pos >= u.from && pos <= u.to) { e.preventDefault(); openUrl(u.url); return true; }
+      for (const u of findUrls(line.text, line.from)) if (pos >= u.from && pos <= u.to) { e.preventDefault(); openUrl(u.url); return true; }
       return false;
     },
   },

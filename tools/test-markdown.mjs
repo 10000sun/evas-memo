@@ -31,8 +31,8 @@ assert.match(render("[a](https://example.com)"), /<a href="https:\/\/example.com
 assert.match(render("[m](mailto:a@b.co)"), /href="mailto:a@b.co"/);
 // 그냥 적은 주소도 링크가 되고, 링크는 모두 새 탭 + noopener noreferrer
 const links = render("https://example.com 와 [링크](https://a.com) [나쁜](javascript:alert(1))");
-const anchors = links.match(/<a [^>]*>/g) || [];
-assert.equal(anchors.length, 3, links);
+const anchors = links.match(/<a [^>]*href=[^>]*>/g) || []; // javascript: 링크는 href가 지워져 이동할 곳이 없다
+assert.equal(anchors.length, 2, links);
 for (const a of anchors) assert.match(a, /(?=.*target="_blank")(?=.*rel="noopener noreferrer")/, a);
 assert.match(links, /<a href="https:\/\/example.com"/);
 assert.match(links, /<a href="https:\/\/a.com"/);
@@ -43,6 +43,32 @@ const raw = render('<style>body{display:none}</style><p style="position:fixed" i
 assert.doesNotMatch(raw, /<style|style=|id="e-meta"|<form/);
 assert.match(raw, /<input[^>]*disabled/);
 assert.equal(render(""), "");
+// href가 있는 요소는 태그와 무관하게 새 탭(SVG <a>·<area>로 앱 탭을 외부 사이트로 바꾸지 못하게)
+for (const bad of [
+  '<svg><a href="https://evil.com"><text>x</text></a></svg>',
+  '<svg><a xlink:href="https://evil.com"><text>x</text></a></svg>',
+  '<map name="m"><area href="https://evil.com" shape="rect" coords="0,0,9,9"></map><img usemap="#m" src="https://e.com/a.png">',
+]) {
+  const out = render(bad);
+  for (const tag of out.match(/<[^>]*href=[^>]*>/gi) || []) assert.match(tag, /(?=.*target="_blank")(?=.*rel="noopener noreferrer")/, `${bad} -> ${out}`);
+  assert.doesNotMatch(out, /<svg|<area|xlink/i, `${bad} -> ${out}`);
+}
+// 외부 이미지는 Referer 없이, 영상·소리는 막는다
+assert.match(render("![a](https://e.com/a.png)"), /<img(?=[^>]*referrerpolicy="no-referrer")/);
+assert.doesNotMatch(render('<video src="https://e.com/v.mp4"><source src="https://e.com/v.mp4"><track src="x"></video><audio src="https://e.com/a.mp3"></audio>'), /<video|<audio|<source|<track/);
+// 주소 규칙: 한글 조사·끝 문장부호·짝 없는 닫는 괄호는 주소가 아니고, 짝이 맞는 괄호는 주소다
+const hrefOf = (t) => (render(t).match(/href="([^"]*)"/) || [])[1];
+assert.equal(hrefOf("https://drive.google.com/xyz에 있어요"), "https://drive.google.com/xyz");
+assert.equal(hrefOf("주소(https://a.com/x), 그리고"), "https://a.com/x");
+assert.equal(hrefOf("https://a.com/x. 끝"), "https://a.com/x");
+assert.equal(hrefOf("https://en.wikipedia.org/wiki/Foo_(bar) 문서"), "https://en.wikipedia.org/wiki/Foo_(bar)");
+assert.equal(hrefOf("https://에 없음"), undefined);
+assert.equal(hrefOf("www.naver.com에 있어요"), "http://www.naver.com");
+assert.equal(hrefOf("https://a.com/?a=1&b=2"), "https://a.com/?a=1&amp;b=2");
+assert.equal(hrefOf("a@b.co 로 메일"), "mailto:a@b.co"); // http(s) 밖의 자동 링크(메일)는 marked 기본 그대로
+const { findUrls } = await import("./url-rule.mjs"); // 에디터(↗·Ctrl+클릭)도 같은 규칙
+assert.deepEqual([...findUrls("x https://drive.google.com/xyz에 [d](https://a.com/(y)) https://", 10)].map((u) => [u.from, u.url]),
+  [[12, "https://drive.google.com/xyz"], [46, "https://a.com/(y)"]]);
 
 // 커서 색: 같은 색을 쓰는 3명이 서로의 상태를 보며 돌아가며 배정하면 모두 다른 색이 되고, 그 뒤로는 바뀌지 않는다
 const { assignDistinctColor } = createRequire(import.meta.url)("../static/color.js");
