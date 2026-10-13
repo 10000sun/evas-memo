@@ -71,10 +71,27 @@ function userRow(u, meId) {
     el("button", { className: "btn danger", onclick: () => confirm(`${u.name}님을 목록에서 제거할까요?`) && act(() => api(`/api/users/${encodeURIComponent(u.id)}`, { method: "DELETE" }), "제거했습니다") }, "제거"));
 }
 
+const when = (iso) => new Date(iso).toLocaleString("ko-KR", { dateStyle: "medium", timeStyle: "short" }); // app.js와 같은 형식
+
+// 접속한 사용자: 권한 지정·기본값 복귀는 위 사용자 권한과 같은 API(PUT/DELETE /api/users/{id})를 쓴다
+function memberRow(m, meId) {
+  const url = `/api/users/${encodeURIComponent(m.id)}`;
+  const role = el("select", {}, new Option("편집자", "editor"), new Option("관리자", "admin"));
+  if (m.role === "viewer") role.add(new Option("보기 전용", "viewer"));
+  role.value = m.role;
+  role.onchange = () => act(() => api(url, { method: "PUT", body: JSON.stringify({ name: m.name, role: role.value }) }), "권한을 바꿨습니다");
+  const reset = el("button", { className: "btn", disabled: !m.custom, title: m.custom ? "" : "지정된 권한이 없습니다",
+    onclick: () => act(() => api(url, { method: "DELETE" }), "기본값으로 되돌렸습니다") }, "기본값으로");
+  return el("div", { className: "item" },
+    el("span", { className: "grow" }, `${m.name} (${m.id})${m.id === meId ? " · 나" : ""}`),
+    el("span", { className: "hint" }, m.last_seen ? `마지막 접속 ${when(m.last_seen)}` : "접속 기록 없음"), role, reset);
+}
+
 async function render() {
-  const [cats, users, me] = await Promise.all([api("/api/categories"), api("/api/users"), api("/api/me")]);
+  const [cats, users, members, me] = await Promise.all([api("/api/categories"), api("/api/users"), api("/api/members"), api("/api/me")]);
   $("cats").replaceChildren(...cats.map(catRow));
   $("users").replaceChildren(...users.map((u) => userRow(u, me.id)));
+  $("members").replaceChildren(...members.map((m) => memberRow(m, me.id)));
 }
 
 const newColor = colorEditor("#64b5f6");

@@ -34,9 +34,12 @@ def role_of(uid):
     """지금 DB 기준 역할. 열린 실시간 연결의 권한을 다시 확인할 때도 쓴다."""
     with db.connect() as con:
         row = con.execute("SELECT role FROM users WHERE id=?", (uid,)).fetchone()
+    return row["role"] if row else default_role()
+
+
+def default_role():
     # 팀 방침에 따라 EVAS_OPEN_EDIT=1이면 로그인한 누구나 편집자. 분류·권한 관리는 계속 관리자만
-    default = "editor" if os.environ.get("EVAS_OPEN_EDIT") == "1" else "viewer"
-    return row["role"] if row else default
+    return "editor" if os.environ.get("EVAS_OPEN_EDIT") == "1" else "viewer"
 
 
 def current_user(request: Request, x_user_id: str | None = Header(default=None)):
@@ -134,6 +137,7 @@ def callback(request: Request, code: str = "", state: str = ""):
     nxt = safe_next(request.session.get("next"))  # 세션 값도 한 번 더 걸러서 쓴다
     request.session.clear()
     request.session.update(uid=p["id"], name=p["name"])
+    db.touch_member(p["id"], p["name"])
     return RedirectResponse(nxt)
 
 
@@ -144,6 +148,7 @@ def dev_login(request: Request, uid: str, name: str = ""):
         raise HTTPException(404)
     request.session.clear()
     request.session.update(uid=uid, name=name or uid)
+    db.touch_member(uid, name or uid)
     return RedirectResponse("/")
 
 

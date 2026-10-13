@@ -67,7 +67,30 @@ def rows(con, sql, *a):
 
 @app.get("/api/me")
 def me(user=Depends(current_user)):
+    db.touch_member(user["id"], user["name"])  # 이미 로그인해 둔 세션·개발용 헤더도 여기서 등록된다
     return user
+
+
+# --- 접속한 사용자 (members: 접속 기록일 뿐 권한과 무관) ---
+@app.get("/api/members")
+def list_members(_=Depends(admin)):
+    """members ∪ users. 접속 기록이 없는 사용자는 시간이 null. role은 current_user와 같은 규칙의 유효 권한."""
+    with db.connect() as con:
+        out = {r["id"]: {**r, "role": auth.default_role(), "custom": False} for r in rows(con, "SELECT * FROM members")}
+        for u in rows(con, "SELECT * FROM users"):
+            m = out.setdefault(u["id"], {"id": u["id"], "name": u["name"], "first_seen": None, "last_seen": None})
+            m.update(role=u["role"], custom=True)
+    out = sorted(out.values(), key=lambda m: m["name"])
+    return sorted(out, key=lambda m: m["last_seen"] or "", reverse=True)  # 최근 접속 순, 기록 없는 사람은 맨 뒤
+
+
+@app.get("/api/members/pick")
+def pick_members(q: str = "", limit: int = 20, _=Depends(current_user)):
+    """사람 고르기용: 로그인한 누구나, {id, name}만. shortcut: 전부 읽어 파이썬에서 거른다(팀 규모), 사용자가 수천이면 SQL로."""
+    q = q.strip().casefold()
+    with db.connect() as con:
+        found = [r for r in rows(con, "SELECT id, name FROM members ORDER BY name") if q in r["name"].casefold()]
+    return found[:max(1, min(limit, 20))]
 
 
 # --- 분류 ---
