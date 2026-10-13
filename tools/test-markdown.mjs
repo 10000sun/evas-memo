@@ -24,6 +24,8 @@ for (const bad of [
 }
 assert.match(render("**굵게**"), /<strong>굵게<\/strong>/);
 assert.match(render("- [ ] 할 일"), /<input(?=[^>]*type="checkbox")(?=[^>]*disabled)[^>]*>/);
+assert.match(render("3. 셋\n4. 넷"), /<ol start="3">/); // 번호가 3부터면 그대로
+assert.match(render("1. 가\n    1. 하위\n    - [ ] 할 일\n2. 나"), /<ol>\s*<li>가\s*<ol>\s*<li>하위<\/li>\s*<\/ol>\s*<ul>\s*<li><input[^>]*disabled[^>]*> 할 일<\/li>/);
 assert.match(render("| a | b |\n|---|---|\n| 1 | 2 |"), /<table>/);
 assert.match(render("[a](https://example.com)"), /<a href="https:\/\/example.com"(?=[^>]*target="_blank")(?=[^>]*rel="noopener noreferrer")/);
 assert.match(render("[m](mailto:a@b.co)"), /href="mailto:a@b.co"/);
