@@ -118,6 +118,37 @@ for (const unit of ["https://. ", "https://, ", "https:// ", "www. "]) {
 const ms1 = timeRender("https://a.com/ ".repeat(1e4)), ms2 = timeRender("https://a.com/ ".repeat(2e4));
 assert.ok(ms2 < 3 * ms1 + 100 && ms2 < 5000, `링크 1e4 ${ms1.toFixed(0)}ms, 2e4 ${ms2.toFixed(0)}ms`);
 
+// 긴 메모: 앞 LIMIT자만 그리고 안내를 붙인다. 짝 없는 강조 10만 자도 느려지지 않고, 깊은 중첩도 던지지 않는다
+const { LIMIT } = window.EvasMarkdown;
+const NOTE = `미리보기는 앞부분 ${LIMIT}자까지만 표시합니다. 전체는 편집 화면에서 볼 수 있습니다.`;
+for (const unit of ["*abc ", "_a ", "**a ", "*~>*", "*a ", "[a ", "`a ", "<a ", "> ", "- ", "1. ", "*"]) {
+  const t0 = performance.now();
+  const out = render(unit.repeat(Math.ceil(100000 / unit.length)));
+  const ms = performance.now() - t0;
+  assert.ok(ms < 1500, `${JSON.stringify(unit)} 10만 자 ${ms.toFixed(0)}ms`);
+  assert.ok(out.includes(NOTE), unit);
+}
+const short = "가".repeat(LIMIT);
+assert.doesNotMatch(render(short), /미리보기는 앞부분/); // 딱 LIMIT자는 자르지 않는다
+const lines = Array.from({ length: 2000 }, (_, i) => `줄 ${i} **굵게**`).join("\n");
+const cutOut = render(lines);
+assert.ok(cutOut.includes(NOTE));
+const lastLine = [...cutOut.matchAll(/줄 (\d+) <strong>굵게<\/strong>/g)].pop();
+assert.ok(lastLine && +lastLine[1] > 100 && +lastLine[1] < 1999, "앞부분은 보이고 뒷부분은 없다");
+assert.ok(!cutOut.includes("**"), "줄 중간에서 자르지 않는다");
+// 코드 블록 안에서 잘려도 안내는 코드 밖에 있다
+const fenced = render("```\n" + "코드 줄\n".repeat(5000) + "```\n뒤");
+assert.ok(/<\/pre>\s*<p class="md-clip">미리보기는/.test(fenced), "안내는 코드 블록 밖");
+assert.ok(!/<pre>[^]*미리보기는[^]*<\/pre>/.test(fenced), "안내가 코드 안에 없다");
+// 안내에는 글이 끼어들지 않는다(글 안의 같은 문구·HTML은 그대로 무해화되고, 안내는 정확히 한 번)
+const inj = render('<script>alert(1)</script><img src=x onerror=alert(1)>\n' + "가".repeat(LIMIT * 2));
+assert.doesNotMatch(inj, /<script|onerror/i);
+assert.equal(inj.split(NOTE).length - 1, 1);
+assert.doesNotMatch(render("가".repeat(LIMIT * 2)).replace(NOTE, ""), /미리보기는 앞부분/);
+// 깊게 중첩돼 marked가 호출 깊이를 넘어도 던지지 않고 글 그대로(HTML 아님) 보여 준다
+const deep = render("> ".repeat(2900) + "<b>x</b>");
+assert.ok(deep.includes("md-fallback") && !deep.includes("<b>"), "깊은 중첩은 글 그대로");
+
 // 커서 색: 같은 색을 쓰는 3명이 서로의 상태를 보며 돌아가며 배정하면 모두 다른 색이 되고, 그 뒤로는 바뀌지 않는다
 const { assignDistinctColor } = createRequire(import.meta.url)("../static/color.js");
 const PALETTE = ["#a", "#b", "#c", "#d"];

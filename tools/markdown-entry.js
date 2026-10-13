@@ -35,7 +35,26 @@ marked.use({
   },
 });
 
-// breaks: 메모는 줄 단위로 쓰므로 줄바꿈 한 번도 줄바꿈으로 보인다
-const render = (text) => DOMPurify.sanitize(marked.parse(String(text), { gfm: true, breaks: true, async: false }), OPTIONS);
+// marked의 짝 없는 강조(* _ ~~)·중첩 처리는 글 길이의 제곱에 가깝게 느려져, 긴 메모의 미리보기가 보는 모두의 화면을 멈춘다
+// (node+jsdom 실측: '*abc '·'**a ' 같은 반복이 2만 자 1~5초, 5만 자 12~32초, 10만 자 37~99초). 6000자는 퍼징 최악이 약 0.5초
+const LIMIT = 6000;
+// shortcut: 앞 LIMIT자만 그린다. 긴 메모 전체를 미리보기로 보려면 선형 시간 파서가 필요
+const clip = (text) => {
+  if (text.length <= LIMIT) return text;
+  const nl = text.lastIndexOf("\n", LIMIT); // 줄 경계에서 자른다(줄바꿈이 없으면 LIMIT자, 이모지 반쪽은 뺀다)
+  return nl > 0 ? text.slice(0, nl) : text.slice(0, LIMIT).replace(/[\uD800-\uDBFF]$/, "");
+};
+const esc = (t) => t.replace(/[&<>"']/g, (c) => "&#" + c.charCodeAt(0) + ";");
 
-window.EvasMarkdown = { render };
+// breaks: 메모는 줄 단위로 쓰므로 줄바꿈 한 번도 줄바꿈으로 보인다
+const parse = (text) => DOMPurify.sanitize(marked.parse(text, { gfm: true, breaks: true, async: false }), OPTIONS);
+const render = (input) => {
+  const text = String(input), head = clip(text);
+  let html;
+  try { html = parse(head); }
+  catch { html = '<pre class="md-fallback">' + esc(head) + "</pre>"; } // 깊게 중첩된 > · 1. 는 marked가 호출 깊이를 넘는다: 글 그대로 보여 준다
+  // 안내는 마크다운 밖에서 붙인다: 잘린 곳이 코드 블록 안이어도 안내가 그 안에 들어가지 않고, 숫자는 상수라 주입이 없다
+  return head.length < text.length ? html + `<p class="md-clip">미리보기는 앞부분 ${LIMIT}자까지만 표시합니다. 전체는 편집 화면에서 볼 수 있습니다.</p>` : html;
+};
+
+window.EvasMarkdown = { render, LIMIT };
