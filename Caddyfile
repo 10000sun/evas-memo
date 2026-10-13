@@ -2,5 +2,8 @@
 # 포트는 .env의 EVAS_PORT(기본 8001, 캘린더의 8000과 겹치지 않게).
 # DOMAIN은 .env의 PUBLIC_URL에서 https:// 를 뺀 주소(예: mymemo.duckdns.org)
 {$DOMAIN} {
+	# /internal/*은 앱끼리만 쓰는 내부 경로라 바깥에서는 404(키 확인은 앱이 한 번 더 한다)
+	@internal path /internal/*
+	respond @internal 404
 	reverse_proxy 127.0.0.1:{$PORT:8001}
 }

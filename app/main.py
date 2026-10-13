@@ -12,7 +12,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 load_dotenv()  # .env의 토큰·비밀값을 읽는다(깃에는 올리지 않는다)
 
-from . import auth, db, folders, memos, push, ws  # noqa: E402  (db.init이 EVAS_ADMIN_IDS를 읽기 전에 .env를 불러와야 한다)
+from . import auth, db, folders, links, memos, push, ws  # noqa: E402  (db.init이 EVAS_ADMIN_IDS를 읽기 전에 .env를 불러와야 한다)
 from .auth import admin, current_user  # noqa: E402
 
 app = FastAPI(title="evas-memo", lifespan=ws.lifespan)
@@ -23,6 +23,7 @@ app.add_middleware(SessionMiddleware, secret_key=os.environ.get("SESSION_SECRET"
 app.include_router(auth.router)
 app.include_router(folders.router)
 app.include_router(memos.router)
+app.include_router(links.router)
 app.include_router(ws.router)
 db.init()
 

@@ -91,12 +91,21 @@ def fail(msg, status=400):
     return HTMLResponse(f'<meta charset="utf-8"><p>{msg}</p><a href="/auth/login">다시 로그인</a>', status)
 
 
+def safe_next(n) -> str:
+    """로그인 뒤 돌아갈 곳. 같은 사이트의 경로+쿼리만 허용하고 그 밖(외부 주소·`//`·`\\`·제어문자·`://`)은 `/`로 돌린다."""
+    if (not isinstance(n, str) or not n.startswith("/") or len(n) > 200 or "//" in n or "\\" in n or "://" in n
+            or any(ord(ch) < 32 or ord(ch) == 127 for ch in n)):
+        return "/"
+    return n
+
+
 @router.get("/auth/login")
-def login(request: Request):
+def login(request: Request, next: str = "/"):
     c = cfg()
     if not (c["DISCORD_CLIENT_ID"] and c["DISCORD_CLIENT_SECRET"] and c["PUBLIC_URL"]):
         raise HTTPException(503, "디스코드 로그인이 설정되지 않았습니다")
     state = request.session["state"] = secrets.token_urlsafe(16)
+    request.session["next"] = safe_next(next)  # 콜백에서 쓴다. 이전 시도의 값은 덮어써 남지 않는다
     # 서버 닉네임과 구성원 확인은 guilds.members.read 권한이 필요하다(서버를 지정했을 때만 요청)
     scope = "identify guilds.members.read" if c["DISCORD_GUILD_ID"] else "identify"
     return RedirectResponse(f"{DISCORD}/oauth2/authorize?" + urlencode({
@@ -117,9 +126,10 @@ def callback(request: Request, code: str = "", state: str = ""):
         return fail("디스코드 로그인에 실패했습니다", 502)
     if not p["in_guild"]:
         return fail("이 메모는 서버 구성원만 볼 수 있습니다", 403)
+    nxt = safe_next(request.session.get("next"))  # 세션 값도 한 번 더 걸러서 쓴다
     request.session.clear()
     request.session.update(uid=p["id"], name=p["name"])
-    return RedirectResponse("/")
+    return RedirectResponse(nxt)
 
 
 @router.get("/auth/dev")

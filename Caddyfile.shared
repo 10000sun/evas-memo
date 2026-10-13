@@ -2,9 +2,15 @@
 # 메모 .env에 SHARED_CALENDAR_URL이 있으면 run-caddy.bat이 이 파일을 쓴다. 캘린더의 evas-caddy 작업/창은 꺼야 한다(80/443을 둘이 못 쓴다).
 # DOMAIN=메모 주소, CAL_DOMAIN=캘린더 주소(둘 다 https:// 를 뺀 값). 포트: 메모 PORT(기본 8001), 캘린더 CAL_PORT(기본 8000)
 {$DOMAIN} {
+	# /internal/*은 앱끼리만 쓰는 내부 경로라 바깥에서는 404(키 확인은 앱이 한 번 더 한다)
+	@internal path /internal/*
+	respond @internal 404
 	reverse_proxy 127.0.0.1:{$PORT:8001}
 }
 
 {$CAL_DOMAIN} {
+	# /internal/*은 앱끼리만 쓰는 내부 경로라 바깥에서는 404(키 확인은 앱이 한 번 더 한다)
+	@internal path /internal/*
+	respond @internal 404
 	reverse_proxy 127.0.0.1:{$CAL_PORT:8000}
 }
