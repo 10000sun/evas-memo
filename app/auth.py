@@ -3,6 +3,7 @@
 디스코드 토큰은 사용자 확인에만 쓰고 저장하지 않는다. 권한(편집자/관리자)은 우리 DB가 정하고
 디스코드 ID를 키로 쓴다.
 """
+import logging
 import os
 import secrets
 from urllib.parse import urlencode
@@ -13,6 +14,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from . import db
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 DISCORD = "https://discord.com"
 
@@ -95,8 +97,12 @@ def fetch_discord_profile(code: str, redirect_uri: str, guild_id: str):
     return {"id": me["id"], "name": display_name(me, member), "in_guild": member is not None if guild_id else True}
 
 
-def fail(msg, status=400):
-    return HTMLResponse(f'<meta charset="utf-8"><p>{msg}</p><a href="/auth/login">다시 로그인</a>', status)
+def fail(msg, status=400, hint=""):
+    # hint: 원인과 해결 방법(고정 문구만: 사용자 입력을 넣지 않는다)
+    return HTMLResponse(
+        f'<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<body style="font:16px/1.6 system-ui,sans-serif;max-width:30em;margin:12vh auto;padding:0 20px">'
+        f'<p><b>{msg}</b></p>{f"<p>{hint}</p>" if hint else ""}<p><a href="/auth/login">다시 로그인</a></p></body>', status)
 
 
 def safe_next(n) -> str:
@@ -126,7 +132,11 @@ def callback(request: Request, code: str = "", state: str = ""):
     expected = request.session.pop("state", None)
     # state가 다르면 남이 만든 로그인 링크로 끌려온 것(로그인 CSRF)이라 거절한다
     if not code or not expected or not secrets.compare_digest(state, expected):
-        return fail("로그인 요청이 올바르지 않습니다")
+        if code and not expected:  # 흔한 원인: 로그인을 시작한 화면과 돌아온 화면의 쿠키가 달라서(홈 화면 앱 <-> 사파리·인앱 브라우저)
+            log.warning("로그인 state 쿠키가 없음: 로그인 시작과 돌아온 곳이 다른 브라우저일 수 있음(UA=%s)", request.headers.get("user-agent", "")[:120])
+        return fail("로그인 요청이 올바르지 않습니다",
+                    hint="홈 화면에 추가한 앱에서 로그인이 안 되면, 사파리(또는 크롬)에서 이 주소를 직접 열어 로그인한 뒤 다시 시도해 보세요. "
+                         "로그인 중에 다른 앱(디스코드 앱 등)으로 넘어갔다가 다른 브라우저로 돌아오면 이 오류가 납니다.")
     c = cfg()
     try:
         p = fetch_discord_profile(code, c["PUBLIC_URL"].rstrip("/") + "/auth/callback", c["DISCORD_GUILD_ID"])
