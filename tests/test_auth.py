@@ -45,6 +45,8 @@ def test_state가_다르면_로그인_거절(discord):
     assert discord.get("/auth/callback?code=boss&state=forged").status_code == 400
     assert discord.get("/api/me").status_code == 401
     assert discord.get("/auth/callback?code=boss&state=").status_code == 400  # state 없이도 거절
+    r = discord.get("/auth/callback?code=boss&state=forged")  # 안내 문구가 있어 홈 화면 앱 사용자가 원인을 알 수 있다
+    assert "사파리" in r.text and "다시 로그인" in r.text
 
 
 def test_로그인_링크_없이_바로_콜백_거절(discord):
