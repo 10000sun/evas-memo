@@ -110,6 +110,23 @@ async function render() {
 
 $("bl-btn").onclick = () => { const h = ($("blocked").hidden = !$("blocked").hidden); $("bl-btn").setAttribute("aria-expanded", String(!h)); };
 
+$("bk-btn").onclick = async () => {
+  try {
+    const r = await fetch("/api/backup");
+    if (!r.ok) throw new Error(`오류 ${r.status}`);
+    const url = URL.createObjectURL(await r.blob());
+    el("a", { href: url, download: ((r.headers.get("content-disposition") || "").match(/filename="?([^";]+)/) || [])[1] || "evas-backup.db" }).click();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    say("백업을 내려받았습니다", false);
+  } catch (e) { say(e.message); }
+};
+$("rs-btn").onclick = () => {
+  const f = $("rs-file").files[0];
+  if (!f) return say("복구할 백업 파일을 먼저 고르세요");
+  if (!confirm(`'${f.name}'(으)로 복구할까요? 지금 데이터가 모두 이 파일의 내용으로 바뀝니다. 되돌리기 어렵습니다.`)) return;
+  act(() => api("/api/restore", { method: "POST", body: f }), "복구했습니다").then(() => ($("rs-file").value = ""));
+};
+
 const newColor = colorEditor("#64b5f6");
 $("cn-color").append(newColor.el);
 $("cat-new").onsubmit = (e) => {
