@@ -52,8 +52,13 @@
 
   <section class="card">
     <h2>접속한 사용자</h2>
-    <p class="hint">디스코드로 한 번이라도 접속한 사람이 자동으로 올라옵니다. 처음 접속하면 편집자로 등록되고 관리자는 여기서 지정합니다. ‘기본값으로’를 누르면 지정이 지워집니다.</p>
+    <p class="hint">‘차단’은 그 사람의 디스코드 계정과 쓴 기기를 막고 캘린더에도 적용됩니다(관리자는 먼저 권한을 내려야 합니다). 디스코드로 한 번이라도 접속한 사람이 자동으로 올라옵니다. 처음 접속하면 편집자로 등록되고 관리자는 여기서 지정합니다. ‘기본값으로’를 누르면 지정이 지워집니다.</p>
     <div id="members"></div>
+  </section>
+
+  <section class="card">
+    <button id="bl-btn" class="btn" type="button" aria-expanded="false">차단 목록</button>
+    <div id="blocked" hidden></div>
   </section>
 </main>
 

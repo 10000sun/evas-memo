@@ -88,15 +88,27 @@ function memberRow(m, meId) {
     onclick: () => act(() => api(url, { method: "DELETE" }), "기본값으로 되돌렸습니다") }, "기본값으로");
   return el("div", { className: "item" },
     el("span", { className: "grow" }, `${m.name} (${m.id})${m.id === meId ? " · 나" : ""}`),
-    el("span", { className: "hint" }, m.last_seen ? `마지막 접속 ${when(m.last_seen)}` : "접속 기록 없음"), role, reset);
+    el("span", { className: "hint" }, m.last_seen ? `마지막 접속 ${when(m.last_seen)}` : "접속 기록 없음"), role, reset,
+    el("button", { className: "btn danger", disabled: m.role === "admin", title: m.role === "admin" ? "관리자는 먼저 권한을 내려야 차단할 수 있습니다" : "",
+      onclick: () => confirm(`${m.name}님의 계정과 기기를 차단할까요? 로그인과 편집이 모두 막힙니다.`) && act(() => api(`/api/blocked/${encodeURIComponent(m.id)}`, { method: "PUT" }), "차단했습니다") }, "차단"));
+}
+
+function blockedRow(b) {
+  return el("div", { className: "item" }, el("span", { className: "grow" }, `${b.name} (${b.id})`),
+    el("button", { className: "btn", onclick: () => act(() => api(`/api/blocked/${encodeURIComponent(b.id)}`, { method: "DELETE" }), "차단을 해제했습니다") }, "차단 해제"));
 }
 
 async function render() {
-  const [cats, users, members, me] = await Promise.all([api("/api/categories"), api("/api/users"), api("/api/members"), api("/api/me")]);
+  const [cats, users, members, me, blocked] = await Promise.all([api("/api/categories"), api("/api/users"), api("/api/members"), api("/api/me"), api("/api/blocked")]);
+  const ban = new Set(blocked.map((b) => b.id));
   $("cats").replaceChildren(...cats.map(catRow));
   $("users").replaceChildren(...users.map((u) => userRow(u, me.id)));
-  $("members").replaceChildren(...members.map((m) => memberRow(m, me.id)));
+  $("members").replaceChildren(...members.filter((m) => !ban.has(m.id)).map((m) => memberRow(m, me.id)));
+  $("bl-btn").textContent = `차단 목록 (${blocked.length})`;
+  $("blocked").replaceChildren(...(blocked.length ? blocked.map(blockedRow) : [el("p", { className: "hint" }, "차단된 사람이 없습니다")]));
 }
+
+$("bl-btn").onclick = () => { const h = ($("blocked").hidden = !$("blocked").hidden); $("bl-btn").setAttribute("aria-expanded", String(!h)); };
 
 const newColor = colorEditor("#64b5f6");
 $("cn-color").append(newColor.el);

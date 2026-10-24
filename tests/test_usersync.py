@@ -19,7 +19,7 @@ def c(client, monkeypatch):
 def sent(monkeypatch):
     calls = []
 
-    def fake(method, uid, body=None):
+    def fake(method, uid, body=None, kind="users"):
         calls.append((method, uid, body))
         return True
     monkeypatch.setattr(usersync, "push", fake)

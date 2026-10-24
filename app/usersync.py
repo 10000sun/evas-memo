@@ -44,14 +44,14 @@ def _peer(path):
     return links.calendar_internal_url() + path
 
 
-def push(method, uid, body=None):
+def push(method, uid, body=None, kind="users"):
     """상대 앱에 같은 변경을 알린다. None: 연동이 꺼짐(키 없음), True: 반영됨, False: 실패(로그만 남긴다). 동기 호출이라 스레드에서 부른다."""
     key = links.link_key()
     if not key:
         return None
     try:
         with httpx.Client(timeout=3, trust_env=False) as h:
-            r = h.request(method, _peer("/internal/sync/users/" + quote(uid, safe="")), json=body, headers={"X-Link-Key": key})
+            r = h.request(method, _peer(f"/internal/sync/{kind}/" + quote(uid, safe="")), json=body, headers={"X-Link-Key": key})
         if r.status_code in (200, 204):
             return True
         log.warning("권한 동기화 거절(%s): %s %s", r.status_code, method, uid)
@@ -60,8 +60,8 @@ def push(method, uid, body=None):
     return False
 
 
-async def push_async(method, uid, body=None):
-    return await asyncio.to_thread(push, method, uid, body)
+async def push_async(method, uid, body=None, kind="users"):
+    return await asyncio.to_thread(push, method, uid, body, kind)
 
 
 def _admins(con):
@@ -105,7 +105,13 @@ def register(app, admin):
             raise HTTPException(404)
         with db.connect() as con:
             users = [dict(r) for r in con.execute("SELECT id, name, role FROM users ORDER BY id")]
+            blocked = [dict(r) for r in con.execute("SELECT id, name FROM blocked")]
         ok = failed = 0
+        for b in blocked:  # 차단도 함께 맞춘다(그때 캘린더가 꺼져 있었을 수 있다)
+            if await push_async("PUT", b["id"], {"name": b["name"]}, "blocked"):
+                ok += 1
+            else:
+                failed += 1
         for u in users:
             if await push_async("PUT", u["id"], {"name": u["name"], "role": u["role"]}):
                 ok += 1

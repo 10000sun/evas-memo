@@ -17,9 +17,10 @@ from . import db
 log = logging.getLogger(__name__)
 router = APIRouter()
 DISCORD = "https://discord.com"
+DEVICE = "evas_dev"  # 기기 식별 쿠키. 지우면 새 기기로 보이는 한계가 있다(shortcut: 웹은 기기를 직접 못 알아본다)
 
 
-def user_of(session, x_user_id: str | None = None):
+def user_of(session, x_user_id: str | None = None, device: str | None = None):
     """세션(또는 개발용 헤더) -> {id, name, role}, 로그인 안 했으면 None. HTTP와 WebSocket이 같이 쓴다.
 
     shortcut: 개발용 헤더 인증(EVAS_DEV_AUTH=1일 때만 켜짐)이 남아 있다. 운영 .env에는 넣지 말 것.
@@ -27,7 +28,7 @@ def user_of(session, x_user_id: str | None = None):
     uid, name = session.get("uid"), session.get("name")
     if not uid and os.environ.get("EVAS_DEV_AUTH") == "1" and x_user_id:
         uid, name = x_user_id, x_user_id
-    if not uid:
+    if not uid or db.is_blocked(uid, device):  # 차단된 사람(계정·기기)은 로그인 안 한 것과 같다(HTTP 401·WebSocket 거절)
         return None
     return {"id": uid, "name": name, "role": role_of(uid)}
 
@@ -46,7 +47,7 @@ def default_role():
 
 def current_user(request: Request, x_user_id: str | None = Header(default=None)):
     """로그인한 사용자 {id, name, role}. role: admin / editor / viewer."""
-    user = user_of(request.session, x_user_id)
+    user = user_of(request.session, x_user_id, request.cookies.get(DEVICE))
     if not user:
         raise HTTPException(401, "로그인이 필요합니다")
     return user
@@ -97,6 +98,11 @@ def fetch_discord_profile(code: str, redirect_uri: str, guild_id: str):
     return {"id": me["id"], "name": display_name(me, member), "in_guild": member is not None if guild_id else True}
 
 
+def set_device(resp, request, device):
+    resp.set_cookie(DEVICE, device, max_age=60 * 60 * 24 * 365 * 10, httponly=True, samesite="lax",
+                    secure=request.url.scheme == "https")
+
+
 def fail(msg, status=400, hint=""):
     # hint: 원인과 해결 방법(고정 문구만: 사용자 입력을 넣지 않는다)
     return HTMLResponse(
@@ -144,11 +150,17 @@ def callback(request: Request, code: str = "", state: str = ""):
         return fail("디스코드 로그인에 실패했습니다", 502)
     if not p["in_guild"]:
         return fail("이 메모는 서버 구성원만 볼 수 있습니다", 403)
+    device = request.cookies.get(DEVICE) or secrets.token_urlsafe(16)
+    if db.is_blocked(p["id"], device):
+        return fail("차단된 사용자입니다", 403)
     nxt = safe_next(request.session.get("next"))  # 세션 값도 한 번 더 걸러서 쓴다
     request.session.clear()
     request.session.update(uid=p["id"], name=p["name"])
     db.touch_member(p["id"], p["name"])
-    return RedirectResponse(nxt)
+    db.touch_device(p["id"], device)
+    resp = RedirectResponse(nxt)
+    set_device(resp, request, device)
+    return resp
 
 
 @router.get("/auth/dev")

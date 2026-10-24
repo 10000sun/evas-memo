@@ -5,14 +5,14 @@ import sqlite3
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 from starlette.middleware.sessions import SessionMiddleware
 
 load_dotenv()  # .env의 토큰·비밀값을 읽는다(깃에는 올리지 않는다)
 
-from . import auth, db, folders, links, memos, push, usersync, ws  # noqa: E402  (db.init이 EVAS_ADMIN_IDS를 읽기 전에 .env를 불러와야 한다)
+from . import auth, blocked, db, folders, links, memos, push, usersync, ws  # noqa: E402  (db.init이 EVAS_ADMIN_IDS를 읽기 전에 .env를 불러와야 한다)
 from .auth import admin, current_user  # noqa: E402
 
 app = FastAPI(title="evas-memo", lifespan=ws.lifespan)
@@ -25,6 +25,7 @@ app.include_router(folders.router)
 app.include_router(memos.router)
 app.include_router(links.router)
 usersync.register(app, auth.admin)  # 캘린더와 관리자·편집자 권한 맞추기(내부 경로 + 관리 화면의 '상대 앱에 적용')
+blocked.register(app, auth.admin)  # 차단(관리 화면 + 캘린더와 동기화)
 app.include_router(ws.router)
 db.init()
 
@@ -67,7 +68,11 @@ def rows(con, sql, *a):
 
 
 @app.get("/api/me")
-def me(user=Depends(current_user)):
+def me(request: Request, response: Response, user=Depends(current_user)):
+    device = request.cookies.get(auth.DEVICE) or secrets.token_urlsafe(16)  # 이미 로그인해 둔 기기도 여기서 묶는다
+    if device != request.cookies.get(auth.DEVICE):
+        auth.set_device(response, request, device)
+    db.touch_device(user["id"], device)
     db.touch_member(user["id"], user["name"])  # 이미 로그인해 둔 세션·개발용 헤더도 여기서 등록된다(처음이면 편집자로)
     return {**user, "role": auth.role_of(user["id"])}  # 방금 등록돼 바뀐 권한을 이 응답에 바로 반영
 

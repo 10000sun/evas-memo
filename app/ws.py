@@ -288,6 +288,7 @@ class _Channel:
     def __init__(self, ws: WebSocket, path: str, user: dict, can_edit: bool, room: _Room):
         self._ws, self._path, self.user, self.can_edit, self.room = ws, path, user, can_edit, room
         self.closed = self.joined = False
+        self.device = ws.cookies.get(auth.DEVICE)
 
     @property
     def path(self) -> str:
@@ -304,7 +305,7 @@ class _Channel:
         try:
             with db.connect() as con:
                 memo = con.execute(f"SELECT {MEMO_ACCESS} FROM memos WHERE id=?", (self.room.memo_id,)).fetchone()
-                return bool(memo) and can_access(memo, {**self.user, "role": auth.role_of(self.user["id"])}, con)
+                return bool(memo) and not db.is_blocked(self.user["id"], self.device) and can_access(memo, {**self.user, "role": auth.role_of(self.user["id"])}, con)
         except sqlite3.Error:
             log.exception("메모 %s 접속 권한 재확인 실패: 연결을 닫는다", self.room.memo_id)
             return False  # fail-closed: 접속자는 다시 연결하면 된다(그때 접속 확인을 다시 거친다)
@@ -358,7 +359,7 @@ class _Channel:
 @router.websocket("/ws/memos/{memo_id}")
 async def memo_ws(websocket: WebSocket, memo_id: int):
     # 수락 전에 확인한다. 로그인 안 함·없는 메모·남의 개인 메모를 구별하지 않고 1008(정책 위반)로 닫는다
-    user = auth.user_of(websocket.session, websocket.headers.get("x-user-id"))
+    user = auth.user_of(websocket.session, websocket.headers.get("x-user-id"), websocket.cookies.get(auth.DEVICE))
     try:
         with db.connect() as con:
             memo = con.execute(f"SELECT {MEMO_ACCESS} FROM memos WHERE id=?", (memo_id,)).fetchone()

@@ -46,6 +46,11 @@ CREATE TABLE IF NOT EXISTS users(
 -- 접속 기록일 뿐 권한과 무관하다(권한은 users). 운영 DB에는 IF NOT EXISTS로 표만 더해진다
 CREATE TABLE IF NOT EXISTS members(
   id TEXT PRIMARY KEY, name TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL);
+-- 차단: 권한(users)은 그대로 두고 로그인·API·실시간 편집만 막는다(해제하면 이전 권한으로 돌아온다)
+CREATE TABLE IF NOT EXISTS blocked(id TEXT PRIMARY KEY, name TEXT NOT NULL);
+-- 기기: 브라우저 쿠키(evas_dev)로 식별해 로그인한 계정과 묶는다. 차단하면 그 사람이 쓴 기기도 함께 막는다
+CREATE TABLE IF NOT EXISTS devices(device TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY(device, user_id));
+CREATE TABLE IF NOT EXISTS blocked_devices(device TEXT PRIMARY KEY);
 -- 비공개 공유: visibility='restricted'인 공동 메모·폴더를 볼 수 있는 사람(만든 사람·관리자는 목록과 무관하게 항상 본다)
 CREATE TABLE IF NOT EXISTS memo_viewers(
   memo_id INTEGER NOT NULL REFERENCES memos(id) ON DELETE CASCADE, user_id TEXT NOT NULL, PRIMARY KEY(memo_id, user_id));
@@ -83,6 +88,23 @@ def _upsert_member(con, uid, name, t):
         "INSERT INTO members(id,name,first_seen,last_seen) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
         "name=excluded.name, last_seen=CASE WHEN substr(last_seen,1,10)<>substr(excluded.last_seen,1,10) "
         "THEN excluded.last_seen ELSE last_seen END", (uid, name, t, t))
+
+
+def is_blocked(uid, device=None):
+    """계정(디스코드 ID)이나 기기 중 하나라도 차단이면 True."""
+    with connect() as con:
+        return con.execute("SELECT 1 FROM blocked WHERE id=? UNION ALL SELECT 1 FROM blocked_devices WHERE device=?",
+                           (uid, device)).fetchone() is not None
+
+
+def touch_device(uid, device):
+    """이 기기를 이 계정과 묶는다(최선 노력). 이미 묶여 있으면 쓰지 않는다."""
+    try:
+        with connect() as con:
+            if not con.execute("SELECT 1 FROM devices WHERE device=? AND user_id=?", (device, uid)).fetchone():
+                con.execute("INSERT OR IGNORE INTO devices(device,user_id) VALUES(?,?)", (device, uid))
+    except Exception:
+        log.warning("기기 기록 실패(무시하고 계속): %s", uid, exc_info=True)
 
 
 def db_path():
