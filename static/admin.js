@@ -98,6 +98,14 @@ function blockedRow(b) {
     el("button", { className: "btn", onclick: () => act(() => api(`/api/blocked/${encodeURIComponent(b.id)}`, { method: "DELETE" }), "차단을 해제했습니다") }, "차단 해제"));
 }
 
+const kb = (n) => (n < 1048576 ? Math.max(1, Math.round(n / 1024)) + " KB" : (n / 1048576).toFixed(1) + " MB");
+function autoRow(b) {
+  const day = b.name.slice(5, 15);
+  return el("div", { className: "item" }, el("span", { className: "grow" }, `${day} 자동 백업 (${kb(b.size)})`),
+    el("a", { className: "btn", href: `/api/backups/${b.name}`, download: b.name }, "내려받기"),
+    el("button", { className: "btn danger", onclick: () => confirm(`${day} 백업으로 복구할까요? 지금 데이터가 모두 이 백업의 내용으로 바뀝니다.`) && act(() => api(`/api/backups/${b.name}/restore`, { method: "POST" }), "복구했습니다") }, "복구"));
+}
+
 async function render() {
   const [cats, users, members, me, blocked] = await Promise.all([api("/api/categories"), api("/api/users"), api("/api/members"), api("/api/me"), api("/api/blocked")]);
   const ban = new Set(blocked.map((b) => b.id));

@@ -2,6 +2,7 @@ import os
 import re
 import secrets
 import sqlite3
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -15,7 +16,13 @@ load_dotenv()  # .env의 토큰·비밀값을 읽는다(깃에는 올리지 않�
 from . import auth, backup, blocked, db, folders, links, memos, push, usersync, ws  # noqa: E402  (db.init이 EVAS_ADMIN_IDS를 읽기 전에 .env를 불러와야 한다)
 from .auth import admin, current_user  # noqa: E402
 
-app = FastAPI(title="evas-memo", lifespan=ws.lifespan)
+@asynccontextmanager
+async def lifespan(a):
+    async with ws.lifespan(a), backup.daily():
+        yield
+
+
+app = FastAPI(title="evas-memo", lifespan=lifespan)
 # shortcut: SESSION_SECRET이 없으면 실행할 때마다 새로 만든다 -> 서버를 재시작하면 모두 로그아웃. 운영에서는 .env에 고정할 것
 app.add_middleware(SessionMiddleware, secret_key=os.environ.get("SESSION_SECRET") or secrets.token_hex(32),
                    https_only=os.environ.get("PUBLIC_URL", "").startswith("https"),
