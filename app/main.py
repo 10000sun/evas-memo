@@ -27,6 +27,16 @@ app = FastAPI(title="evas-memo", lifespan=lifespan)
 app.add_middleware(SessionMiddleware, secret_key=os.environ.get("SESSION_SECRET") or secrets.token_hex(32),
                    https_only=os.environ.get("PUBLIC_URL", "").startswith("https"),
                    same_site="lax", max_age=60 * 60 * 24 * 30)
+@app.middleware("http")
+async def revalidate_static(request, call_next):
+    """화면 파일(html·js·css)은 열 때마다 서버에 변경 여부를 확인하게 한다(바뀐 게 없으면 304로 가볍게 끝난다).
+    지시가 없으면 브라우저가 옛 파일을 며칠씩 쓸 수 있어, 홈 화면에 추가한 앱에 새 배포가 늦게 반영된다."""
+    r = await call_next(request)
+    if not request.url.path.startswith("/api"):
+        r.headers.setdefault("Cache-Control", "no-cache")
+    return r
+
+
 app.include_router(auth.router)
 app.include_router(folders.router)
 app.include_router(memos.router)
