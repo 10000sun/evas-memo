@@ -69,6 +69,12 @@
     <div class="item"><button id="bk-btn" class="btn primary" type="button">백업 내려받기</button></div>
     <div class="item"><input id="rs-file" type="file" accept=".db,application/octet-stream"><button id="rs-btn" class="btn danger" type="button">이 파일로 복구</button></div>
   </section>
+
+  <section class="card">
+    <h2>관리 기록</h2>
+    <p class="hint">차단·차단 해제·백업 복구를 누가 언제 했는지 최근 100건이 남습니다. 백업으로 복구하면 그 백업 이후의 기록은 사라집니다.</p>
+    <div id="audit"></div>
+  </section>
 </main>
 
 <script src="common.js"></script>

@@ -106,6 +106,13 @@ function autoRow(b) {
     el("button", { className: "btn danger", onclick: () => confirm(`${day} 백업으로 복구할까요? 지금 데이터가 모두 이 백업의 내용으로 바뀝니다.`) && act(() => api(`/api/backups/${b.name}/restore`, { method: "POST" }), "복구했습니다") }, "복구"));
 }
 
+const AUDIT = { block: "차단", unblock: "차단 해제", restore: "백업 복구" };
+function auditRow(a) {
+  const what = a.action === "restore" ? `백업을 복구했습니다${a.detail ? ` (${a.detail})` : ""}` : `${a.target_name || a.target_id}님을 ${AUDIT[a.action] || a.action}했습니다`;
+  return el("div", { className: "item" }, el("span", { className: "grow" }, `${a.actor_name || "알 수 없음"}님이 ${what}`),
+    el("span", { className: "hint" }, new Date(a.at).toLocaleString("ko-KR", { dateStyle: "medium", timeStyle: "short" })));
+}
+
 async function render() {
   const [cats, users, members, me, blocked] = await Promise.all([api("/api/categories"), api("/api/users"), api("/api/members"), api("/api/me"), api("/api/blocked")]);
   const ban = new Set(blocked.map((b) => b.id));

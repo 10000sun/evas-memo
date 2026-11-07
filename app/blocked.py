@@ -15,7 +15,7 @@ class NameIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
 
 
-async def _add(uid, name):
+async def _add(uid, name, actor=None):
     with db.connect() as con:
         row = con.execute("SELECT role FROM users WHERE id=?", (uid,)).fetchone()
         if row and row["role"] == "admin":
@@ -23,6 +23,7 @@ async def _add(uid, name):
         con.execute("INSERT INTO blocked(id,name) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name", (uid, name))
         con.execute("INSERT OR IGNORE INTO blocked_devices SELECT device FROM devices WHERE user_id=?", (uid,))
         con.execute("DELETE FROM push_subs WHERE user_id=?", (uid,))  # 알림도 끊는다
+        db.audit(con, actor, "block", uid, name)
     await _kick(uid)
 
 
@@ -31,8 +32,11 @@ async def _kick(uid):
     await ws.rooms.revoke(*BLOCKED, user_id=uid)
 
 
-def _remove(uid):
+def _remove(uid, actor=None):
     with db.connect() as con:
+        was = con.execute("SELECT name FROM blocked WHERE id=?", (uid,)).fetchone()
+        if was:
+            db.audit(con, actor, "unblock", uid, was["name"])
         con.execute("DELETE FROM blocked_devices WHERE device IN (SELECT device FROM devices WHERE user_id=?)", (uid,))
         con.execute("DELETE FROM blocked WHERE id=?", (uid,))
 
@@ -40,22 +44,28 @@ def _remove(uid):
 def register(app, admin):
     r = APIRouter()
 
+    @r.get("/api/audit")
+    def list_audit(_=Depends(admin)):
+        """관리 기록(차단·해제·복구) 최근 100건, 최신 순."""
+        with db.connect() as con:
+            return [dict(x) for x in con.execute("SELECT * FROM audit ORDER BY id DESC LIMIT 100")]
+
     @r.get("/api/blocked")
     def list_blocked(_=Depends(admin)):
         with db.connect() as con:
             return [dict(x) for x in con.execute("SELECT id, name FROM blocked ORDER BY name")]
 
     @r.put("/api/blocked/{uid}")
-    async def block(uid: str, _=Depends(admin)):
+    async def block(uid: str, me=Depends(admin)):
         with db.connect() as con:
             row = con.execute("SELECT name FROM members WHERE id=? UNION ALL SELECT name FROM users WHERE id=?", (uid, uid)).fetchone()
         name = row["name"] if row else uid
-        await _add(uid, name)
+        await _add(uid, name, me)
         return {"id": uid, "name": name, "synced": await usersync.push_async("PUT", uid, {"name": name}, "blocked")}
 
     @r.delete("/api/blocked/{uid}")
-    async def unblock(uid: str, _=Depends(admin)):
-        _remove(uid)  # 이미 풀려 있어도 성공: 캘린더에 못 알렸을 때 다시 눌러 맞출 수 있게
+    async def unblock(uid: str, me=Depends(admin)):
+        _remove(uid, me)  # 이미 풀려 있어도 성공: 캘린더에 못 알렸을 때 다시 눌러 맞출 수 있게
         return {"id": uid, "synced": await usersync.push_async("DELETE", uid, None, "blocked")}
 
     @r.put("/internal/sync/blocked/{uid}", status_code=204)

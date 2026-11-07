@@ -105,7 +105,7 @@ def register(app, admin):
         return FileResponse(tmp, media_type="application/octet-stream", filename=f"evas-memo-{datetime.now():%Y%m%d-%H%M}.db",
                             background=BackgroundTask(os.remove, tmp))
 
-    async def restore_from(src, me):
+    async def restore_from(src, me, source=""):
         path = db.db_path()
         _check(src)
         _copy(path, path + ".before-restore")
@@ -117,6 +117,7 @@ def register(app, admin):
             con.execute("INSERT INTO users(id,name,role) VALUES(?,?, 'admin') ON CONFLICT(id) DO UPDATE SET role='admin'",
                         (me["id"], me["name"] or me["id"]))
             con.execute("DELETE FROM blocked WHERE id=?", (me["id"],))
+            db.audit(con, me, "restore", detail=source)  # 복구된 DB에 남기므로 이 기록은 복구 뒤에도 보인다
 
     def auto_path(name):
         p = os.path.join(backup_dir(), name)
@@ -134,7 +135,7 @@ def register(app, admin):
 
     @app.post("/api/backups/{name}/restore")
     async def restore_auto(name: str, me=Depends(admin)):
-        await restore_from(auto_path(name), me)
+        await restore_from(auto_path(name), me, f"자동 백업 {name[5:15]}")
         return {"ok": True}
 
     @app.post("/api/restore")
@@ -148,7 +149,7 @@ def register(app, admin):
         try:
             with os.fdopen(fd, "wb") as f:
                 f.write(data)
-            await restore_from(tmp, me)
+            await restore_from(tmp, me, "올린 파일")
         finally:
             os.remove(tmp)
         return {"ok": True}

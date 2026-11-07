@@ -48,6 +48,9 @@ CREATE TABLE IF NOT EXISTS members(
   id TEXT PRIMARY KEY, name TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL);
 -- 차단: 권한(users)은 그대로 두고 로그인·API·실시간 편집만 막는다(해제하면 이전 권한으로 돌아온다)
 CREATE TABLE IF NOT EXISTS blocked(id TEXT PRIMARY KEY, name TEXT NOT NULL);
+-- 관리 기록(차단·해제·복구): 누가 언제 무엇을 했는지
+CREATE TABLE IF NOT EXISTS audit(
+  id INTEGER PRIMARY KEY, at TEXT NOT NULL, actor_id TEXT, actor_name TEXT, action TEXT NOT NULL, target_id TEXT, target_name TEXT, detail TEXT);
 -- 기기: 브라우저 쿠키(evas_dev)로 식별해 로그인한 계정과 묶는다. 차단하면 그 사람이 쓴 기기도 함께 막는다
 CREATE TABLE IF NOT EXISTS devices(device TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY(device, user_id));
 CREATE TABLE IF NOT EXISTS blocked_devices(device TEXT PRIMARY KEY);
@@ -95,6 +98,12 @@ def is_blocked(uid, device=None):
     with connect() as con:
         return con.execute("SELECT 1 FROM blocked WHERE id=? UNION ALL SELECT 1 FROM blocked_devices WHERE device=?",
                            (uid, device)).fetchone() is not None
+
+
+def audit(con, actor, action, target_id=None, target_name=None, detail=""):
+    """관리 기록 한 줄. actor가 None이면 다른 앱의 동기화로 일어난 일."""
+    con.execute("INSERT INTO audit(at,actor_id,actor_name,action,target_id,target_name,detail) VALUES(?,?,?,?,?,?,?)",
+                (now(), actor and actor["id"], actor["name"] if actor else "다른 앱(동기화)", action, target_id, target_name, detail))
 
 
 def touch_device(uid, device):
