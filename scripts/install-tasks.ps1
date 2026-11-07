@@ -3,7 +3,7 @@
 #   -Logon: 비밀번호 없이, 이 계정으로 로그인할 때 실행
 #   -System: 비밀번호 없이, SYSTEM 계정으로 컴퓨터가 켜질 때 실행(Windows 계정에 비밀번호가 없을 때 쓴다)
 # 관리자 권한 필요. install-tasks.bat을 우클릭 > 관리자 권한으로 실행.
-param([switch]$Logon, [switch]$System)
+param([switch]$Logon, [switch]$System, [switch]$UpdateOnly)  # -UpdateOnly: 자동 배포 작업만 등록(install-auto-update.bat)
 $ErrorActionPreference = "Stop"
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -19,8 +19,8 @@ $ErrorActionPreference = "Continue"
 & $py -c "import uvicorn, fastapi, itsdangerous, dotenv, httpx, pycrdt" 2>$null
 $pkgOk = ($LASTEXITCODE -eq 0)
 $ErrorActionPreference = "Stop"
-if (-not $pkgOk) { throw "패키지가 없습니다. 먼저 실행: $py -m pip install -r requirements.txt" }
-if (-not (Get-Command caddy -ErrorAction SilentlyContinue)) { throw "caddy.exe를 PATH에서 찾지 못했습니다 (C:\caddy 를 PATH에 추가했는지 확인)" }
+if (-not $pkgOk -and -not $UpdateOnly) { throw "패키지가 없습니다. 먼저 실행: $py -m pip install -r requirements.txt" }
+if (-not $UpdateOnly -and -not (Get-Command caddy -ErrorAction SilentlyContinue)) { throw "caddy.exe를 PATH에서 찾지 못했습니다 (C:\caddy 를 PATH에 추가했는지 확인)" }
 
 $user = "$env:USERDOMAIN\$env:USERNAME"
 
@@ -56,24 +56,36 @@ if ($System) {
     $who = @{ User = $user; Password = $plain; RunLevel = "Highest" }
 }
 
-function Add-Task($name, $action, $triggers) {
-    Register-ScheduledTask -TaskName $name -Action $action -Trigger $triggers -Settings $settings @who -Force | Out-Null
+function Add-Task($name, $action, $triggers, $s = $settings) {
+    Register-ScheduledTask -TaskName $name -Action $action -Trigger $triggers -Settings $s @who -Force | Out-Null
     Write-Host "등록 완료: $name"
 }
 
-Add-Task "evas-memo-app" (New-ScheduledTaskAction -Execute $py -Argument "-m uvicorn app.main:app --host 127.0.0.1 --port $port" -WorkingDirectory $root) $boot
-Add-Task "evas-memo-caddy" (New-ScheduledTaskAction -Execute "$root\scripts\run-caddy.bat" -WorkingDirectory $root) $boot
+if (-not $UpdateOnly) {
+    Add-Task "evas-memo-app" (New-ScheduledTaskAction -Execute $py -Argument "-m uvicorn app.main:app --host 127.0.0.1 --port $port" -WorkingDirectory $root) $boot
+    Add-Task "evas-memo-caddy" (New-ScheduledTaskAction -Execute "$root\scripts\run-caddy.bat" -WorkingDirectory $root) $boot
 
-# DuckDNS는 .env에 token이 있을 때만(공유기 DDNS 등 다른 주소를 쓰면 필요 없다)
-if (Select-String -Path "$root\.env" -Pattern '^DUCKDNS_TOKEN=.+' -Quiet) {
-    $every5 = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
-    Add-Task "evas-memo-duckdns" (New-ScheduledTaskAction -Execute $py -Argument "scripts\duckdns_update.py" -WorkingDirectory $root) @($boot, $every5)
-} else {
-    Write-Host "건너뜀: evas-memo-duckdns (.env에 DUCKDNS_TOKEN 없음)"
+    # DuckDNS는 .env에 token이 있을 때만(공유기 DDNS 등 다른 주소를 쓰면 필요 없다)
+    if (Select-String -Path "$root\.env" -Pattern '^DUCKDNS_TOKEN=.+' -Quiet) {
+        $every5 = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
+        Add-Task "evas-memo-duckdns" (New-ScheduledTaskAction -Execute $py -Argument "scripts\duckdns_update.py" -WorkingDirectory $root) @($boot, $every5)
+    } else {
+        Write-Host "건너뜀: evas-memo-duckdns (.env에 DUCKDNS_TOKEN 없음)"
+    }
 }
+
+# 자동 배포: main에 새 커밋이 올라오면 받아서 앱을 다시 켠다(5분마다 확인, 결과는 data\update.log)
+$updSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -MultipleInstances IgnoreNew
+$every5u = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
+Add-Task "evas-memo-update" (New-ScheduledTaskAction -Execute $py -Argument "scripts\auto_update.py" -WorkingDirectory $root) @($boot, $every5u) $updSettings
 $plain = $null
 
-Write-Host ""
-Write-Host "끝. 지금 열려 있는 run-app.bat / run-caddy.bat 창을 닫은 뒤 아래로 시작하거나 PC를 재부팅하세요."
-Write-Host "  schtasks /Run /TN evas-memo-app"
-Write-Host "  schtasks /Run /TN evas-memo-caddy"
+if ($UpdateOnly) {
+    Write-Host ""
+    Write-Host "끝. 이제 main에 새 버전이 올라오면 5분 안에 자동으로 받아 재시작합니다(기록: data\update.log)."
+} else {
+    Write-Host ""
+    Write-Host "끝. 지금 열려 있는 run-app.bat / run-caddy.bat 창을 닫은 뒤 아래로 시작하거나 PC를 재부팅하세요."
+    Write-Host "  schtasks /Run /TN evas-memo-app"
+    Write-Host "  schtasks /Run /TN evas-memo-caddy"
+}
