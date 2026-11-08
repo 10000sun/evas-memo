@@ -20,6 +20,7 @@ import { tags as t } from "@lezer/highlight";
 import { findUrls } from "./url-rule.mjs";
 import { liveMarkdown } from "./live-md.js";
 import { COMMANDS, formatting, inCode } from "./format.js";
+import { renumber } from "./renumber.js";
 
 // 마크다운 입력 강조. 색은 style.css 변수를 써서 라이트·다크를 따라간다
 const mdHighlight = HighlightStyle.define([
@@ -224,7 +225,7 @@ function create({ parent, memoId, user, linkSource, live = true }) {
     parent,
     state: EditorState.create({
       doc: text.toString(),
-      extensions: [atSource ? failGuard : [], setup, EditorView.lineWrapping, indentUnit.of("    "), tabKeys, markdown({ base: markdownLanguage }),
+      extensions: [atSource ? failGuard : [], setup, EditorView.lineWrapping, indentUnit.of("    "), tabKeys, renumber, markdown({ base: markdownLanguage }),
         syntaxHighlighting(mdHighlight), links, live ? liveMarkdown({ linkWidget: (url) => new OpenLink(url), openUrl }) : [], fmt.extension,
         yCollab(text, provider.awareness, { undoManager }),
         atSource ? [EditorState.languageData.of(() => [{ autocomplete: atSource }]), hintsAbove] : []],

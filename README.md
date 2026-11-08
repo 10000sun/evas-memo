@@ -36,4 +36,4 @@
 ## 테스트와 번들
 - 서버: `python -m pytest`
 - 브라우저 코드(`static/memolink.js` 등)는 pytest가 `node --test tests/memolink.test.js`도 돌린다(node가 없으면 건너뜀).
-- 에디터·미리보기 번들(`static/vendor/*.bundle.js`)은 `tools/`에서 빌드한 결과를 커밋한다: `cd tools && npm i && npm run build`, 미리보기 테스트는 `node test-markdown.mjs`. `tools/node_modules`는 커밋하지 않는다.
+- 에디터·미리보기 번들(`static/vendor/*.bundle.js`)은 `tools/`에서 빌드한 결과를 커밋한다: `cd tools && npm i && npm run build`, 미리보기 테스트는 `node test-markdown.mjs`, 번호 목록 자동 정렬 테스트는 `node test-renumber.mjs`(pytest도 `tools/node_modules`가 있으면 돌린다). `tools/node_modules`는 커밋하지 않는다.
