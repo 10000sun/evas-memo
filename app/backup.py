@@ -100,10 +100,17 @@ async def daily(_app=None):
 
 
 
-def _running_version():
-    """이 프로세스가 켜질 때의 코드 버전(git). git이 없으면 None. 켜진 뒤에 코드만 바뀌었는지 알아보려고 처음 한 번만 읽는다."""
+def _running_version(root=ROOT):
+    """이 프로세스가 켜질 때의 코드 버전. 자동 배포가 남긴 data/version.json을 먼저 보고, 없으면 git(개발 PC), 그것도 없으면 None.
+    켜진 뒤에 코드만 바뀌었는지 알아보려고 처음 한 번만 읽는다."""
     try:
-        out = subprocess.run(["git", "log", "-1", "--format=%h %cI"], cwd=ROOT, capture_output=True, text=True, timeout=5).stdout.split()
+        with open(os.path.join(root, "data", "version.json"), encoding="utf-8") as f:
+            v = json.load(f)
+        return {"commit": v["sha"][:7], "date": v["date"]}
+    except (OSError, ValueError, KeyError):
+        pass
+    try:
+        out = subprocess.run(["git", "log", "-1", "--format=%h %cI"], cwd=root, capture_output=True, text=True, timeout=5).stdout.split()
         return {"commit": out[0], "date": out[1]}
     except Exception:
         return None

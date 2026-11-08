@@ -1,27 +1,41 @@
-r"""서버 PC 자동 배포: main에 새 커밋이 올라오면 받아서 앱을 다시 켠다.
+r"""서버 PC 자동 배포: GitHub의 main에 새 버전이 올라오면 내려받아 파일을 바꾸고 앱을 다시 켠다. git이 필요 없다(파이썬만 있으면 된다).
 작업 스케줄러(evas-memo-update)가 5분마다 부른다. 설치: scripts\install-auto-update.bat (관리자 권한, 한 번만).
 
-순서: 새 커밋 확인 -> 패키지 목록이 바뀌었으면 설치 -> DB 사본(backups/pre-update-*.db, 최근 5개) -> git pull --ff-only -> 앱 재시작 -> 켜졌는지 확인.
-어느 단계든 실패하면 앱은 그대로 두고 data/update.log에 적으며, 다음 주기에 다시 시도한다.
-전제: 서버 PC에서는 코드를 직접 고치지 않는다(고친 파일 때문에 pull이 안 되면 멈추고 기록한다).
+순서: 최신 커밋 확인 -> (새 버전이면) zip 내려받기 -> 패키지 목록이 바뀌었으면 설치 -> DB 사본(backups/pre-update-*.db, 최근 5개)
+      -> 파일 교체(data·.env는 건드리지 않는다) -> 앱 재시작 -> 켜졌는지 확인.
+어느 단계든 실패하면 앱은 그대로 두고 data/update.log·data/update-status.json에 적으며, 다음 주기에 다시 시도한다.
+설정(.env, 선택): GITHUB_REPO(기본 10000sun/evas-memo), GITHUB_TOKEN(비공개 레포일 때만. 읽기 전용 토큰).
+shortcut: 레포가 공개라는 전제로 인증 없이 받는다(시간당 60번 제한: 5분 주기는 충분). 비공개로 바꾸면 GITHUB_TOKEN을 넣을 것.
 """
 import glob
+import hashlib
+import io
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.request
+import zipfile
 from datetime import datetime, timezone
 
+DEFAULT_REPO = "10000sun/evas-memo"
 APP_TASK = "evas-memo-app"  # 앱을 띄우는 작업 스케줄러 작업 이름(scripts\restart-app.bat과 같다)
 DEFAULT_PORT = 8001
 BRANCH = "main"
 KEEP = 5  # 배포 직전 DB 사본을 몇 개 남길지
-LOG, FAIL = os.path.join("data", "update.log"), os.path.join("data", "update.fail")
-STATUS = os.path.join("data", "update-status.json")  # 관리 화면이 읽는다: 마지막 확인 시각·현재 버전·마지막 배포·오류
+DATA = "data"
+LOG, FAIL = os.path.join(DATA, "update.log"), os.path.join(DATA, "update.fail")
+STATUS = os.path.join(DATA, "update-status.json")  # 관리 화면이 읽는다: 마지막 확인 시각·현재 버전·마지막 배포·오류
+VERSION = os.path.join(DATA, "version.json")  # 지금 설치된 버전 {sha, date}. 앱도 이것으로 '실행 중인 버전'을 보여 준다
+MANIFEST = os.path.join(DATA, "deployed-files.json")  # 지난 배포가 깐 파일 목록(새 버전에서 없어진 파일을 지우려고)
+
+
+def now_utc():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def log(msg):
@@ -31,31 +45,24 @@ def log(msg):
         f.write(line + "\n")
 
 
+def read_json(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def write_json(path, obj):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False)
+
+
 def write_status(**fields):
     """상태 파일에 값을 합쳐 쓴다. 관리 화면이 '자동 배포가 돌고 있나'를 보는 근거(변화가 없는 확인도 checked_at을 갱신한다)."""
-    try:
-        with open(STATUS, encoding="utf-8") as f:
-            cur = json.load(f)
-    except (OSError, ValueError):
-        cur = {}
+    cur = read_json(STATUS) or {}
     cur.update(fields)
-    with open(STATUS, "w", encoding="utf-8") as f:
-        json.dump(cur, f, ensure_ascii=False)
-
-
-def now_utc():
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def git(*args):
-    r = subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8")
-    if r.returncode:
-        raise RuntimeError(f"git {' '.join(args)}: {r.stderr.strip()}")
-    return r.stdout.strip()
-
-
-def is_ancestor(a, b):
-    return subprocess.run(["git", "merge-base", "--is-ancestor", a, b], capture_output=True).returncode == 0
+    write_json(STATUS, cur)
 
 
 def env_value(name, default=None):
@@ -71,9 +78,62 @@ def env_value(name, default=None):
     return os.environ.get(name, default)
 
 
+def http_get(url, accept=None):
+    headers = {"User-Agent": "evas-auto-update"}
+    if accept:
+        headers["Accept"] = accept
+    token = env_value("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60) as r:
+        return r.read()
+
+
+def latest():
+    """GitHub main의 최신 커밋 {sha, date}."""
+    repo = env_value("GITHUB_REPO", DEFAULT_REPO)
+    d = json.loads(http_get(f"https://api.github.com/repos/{repo}/commits/{BRANCH}", "application/vnd.github+json"))
+    return {"sha": d["sha"], "date": d["commit"]["committer"]["date"]}
+
+
+def download(sha):
+    """그 커밋의 소스 zip(바이트)."""
+    return http_get(f"https://api.github.com/repos/{env_value('GITHUB_REPO', DEFAULT_REPO)}/zipball/{sha}")
+
+
+def skipped(rel):
+    """교체하지 않는 파일: 운영 데이터·설정·캐시."""
+    parts = rel.replace("\\", "/").split("/")
+    return parts[0] in ("data", ".git") or rel == ".env" or "__pycache__" in parts or "node_modules" in parts or rel.endswith(".pyc")
+
+
+def extract(zbytes, dest):
+    """zip을 dest에 푼다(맨 위 폴더 한 겹은 벗긴다). 폴더 밖으로 나가는 경로가 있으면 거부한다."""
+    dest = os.path.abspath(dest)
+    with zipfile.ZipFile(io.BytesIO(zbytes)) as z:
+        top = z.namelist()[0].split("/")[0] + "/"
+        for info in z.infolist():
+            if info.is_dir() or not info.filename.startswith(top):
+                continue
+            target = os.path.abspath(os.path.join(dest, info.filename[len(top):]))
+            if not target.startswith(dest + os.sep):
+                raise RuntimeError(f"zip 안에 이상한 경로가 있습니다: {info.filename}")
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "wb") as f:
+                f.write(z.read(info))
+
+
+def sha256(path):
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return None
+
+
 def snapshot():
     """배포 직전 DB를 한 부 남긴다(새 버전이 DB를 바꾸다 잘못돼도 되돌릴 수 있게). 최근 KEEP개만 둔다."""
-    src = env_value("EVAS_DB", os.path.join("data", "evas.db"))
+    src = env_value("EVAS_DB", os.path.join(DATA, "evas.db"))
     if not os.path.exists(src):
         return
     d = env_value("EVAS_BACKUP_DIR") or os.path.join(os.path.dirname(src) or ".", "backups")
@@ -89,15 +149,26 @@ def snapshot():
         os.remove(old)
 
 
-def install_requirements(ref):
-    """받기 전에 새 requirements.txt로 설치해 둔다(설치가 실패하면 코드는 바뀌지 않는다)."""
-    fd, path = tempfile.mkstemp(suffix=".txt")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(git("show", f"{ref}:requirements.txt") + "\n")
-        subprocess.run([sys.executable, "-m", "pip", "install", "-r", path], check=True)
-    finally:
-        os.remove(path)
+def install_requirements(path):
+    """새 requirements.txt로 설치한다(실패하면 파일은 바뀌지 않는다)."""
+    subprocess.run([sys.executable, "-m", "pip", "install", "-r", path], check=True)
+
+
+def apply_files(src):
+    """src의 파일을 이 폴더로 복사하고, 지난 배포에는 있었는데 새 버전에서 없어진 파일은 지운다."""
+    new = []
+    for base, _dirs, names in os.walk(src):
+        for n in names:
+            rel = os.path.relpath(os.path.join(base, n), src).replace("\\", "/")
+            if skipped(rel):
+                continue
+            os.makedirs(os.path.dirname(rel) or ".", exist_ok=True)
+            shutil.copyfile(os.path.join(base, n), rel)
+            new.append(rel)
+    for rel in set(read_json(MANIFEST) or []) - set(new):
+        if not skipped(rel) and os.path.isfile(rel):
+            os.remove(rel)
+    write_json(MANIFEST, sorted(new))
 
 
 def restart():
@@ -120,34 +191,33 @@ def healthy(timeout=60):
 
 
 def update():
-    branch = git("rev-parse", "--abbrev-ref", "HEAD")
-    if branch != BRANCH:  # 다른 브랜치는 건드리지 않되, 조용히 넘어가면 '돌고는 있는데 안 올라오는' 상태를 알 수 없으니 실패로 알린다
-        raise RuntimeError(f"서버 PC가 {BRANCH}가 아닌 '{branch}' 브랜치를 보고 있어 자동 배포를 건너뜁니다(레포 폴더에서 `git checkout {BRANCH}` 후 `git pull`)")
-    git("fetch", "origin", BRANCH)
-    old, new = git("rev-parse", "HEAD"), git("rev-parse", f"origin/{BRANCH}")
-    if old == new:
+    new, cur = latest(), read_json(VERSION)
+    if cur and cur.get("sha") == new["sha"]:
         return
-    if not is_ancestor(old, new):
-        raise RuntimeError("이 PC의 코드가 main과 갈라졌습니다(PC에서 직접 고치거나 커밋한 것이 있나 확인하세요)")
-    log(f"새 버전 {old[:7]} -> {new[:7]}")
-    if "requirements.txt" in git("diff", "--name-only", old, new).splitlines():
-        install_requirements(f"origin/{BRANCH}")
-    snapshot()
-    git("pull", "--ff-only", "origin", BRANCH)
+    log(f"새 버전 {(cur or {}).get('sha', '알 수 없음')[:7]} -> {new['sha'][:7]}")
+    zbytes = download(new["sha"])
+    with tempfile.TemporaryDirectory() as tmp:
+        extract(zbytes, tmp)
+        req = "requirements.txt"
+        if sha256(os.path.join(tmp, req)) != sha256(req):
+            install_requirements(os.path.join(tmp, req))
+        snapshot()
+        apply_files(tmp)
+    write_json(VERSION, new)
     restart()
     ok = healthy()
     log("배포 완료: 앱이 켜졌습니다" if ok else "배포했지만 앱이 응답하지 않습니다. 로그를 확인하세요(되돌리기: docs/DEPLOY.md)")
-    write_status(deployed_at=now_utc(), deployed_to=new[:7], deployed_ok=ok)
+    write_status(deployed_at=now_utc(), deployed_to=new["sha"][:7], deployed_ok=ok)
 
 
 def run(root):
     os.chdir(root)
-    os.makedirs("data", exist_ok=True)
+    os.makedirs(DATA, exist_ok=True)
     try:
         update()
         if os.path.exists(FAIL):
             os.remove(FAIL)
-        write_status(checked_at=now_utc(), head=git("rev-parse", "--short", "HEAD"), error=None)
+        write_status(checked_at=now_utc(), head=((read_json(VERSION) or {}).get("sha") or "")[:7] or None, error=None)
         return 0
     except Exception as e:
         msg = f"실패(앱은 그대로 둡니다): {e}"

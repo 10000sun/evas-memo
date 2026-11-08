@@ -28,3 +28,10 @@ def test_admin_page_fills_audit_and_deploy_sections():
     html = (Path(__file__).parent.parent / "static" / "admin.html").read_text(encoding="utf-8")
     for el_id in ("audit", "deploy"):
         assert f'id="{el_id}"' in html and f'$("{el_id}").replaceChildren' in js
+
+
+def test_running_version_reads_the_file_left_by_auto_update(tmp_path):
+    os.makedirs(tmp_path / "data")
+    (tmp_path / "data" / "version.json").write_text(json.dumps({"sha": "abcdef1234567890", "date": "2026-11-08T01:00:00Z"}), encoding="utf-8")
+    assert backup._running_version(str(tmp_path)) == {"commit": "abcdef1", "date": "2026-11-08T01:00:00Z"}
+    assert backup._running_version(str(tmp_path / "없는 폴더")) is None  # git도 version.json도 없는 곳
