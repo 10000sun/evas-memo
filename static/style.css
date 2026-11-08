@@ -359,3 +359,6 @@ label.inline { flex-direction: row; align-items: center; gap: 8px; }
   .e-tool { min-width: 36px; height: 36px; }
   .cm-fmt-row button { min-width: 34px; height: 34px; }
 }
+
+/* 번호 목록의 번호: 자동으로 매겨지고 직접 고칠 수 없다(흐리게) */
+.e-body .cm-num { color: var(--muted); }

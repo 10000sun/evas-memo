@@ -1,8 +1,8 @@
 // node tools/test-renumber.mjs — 번호 목록 자동 정렬(renumber.js)을 확인한다. 실패하면 종료 코드 1
 import assert from "node:assert/strict";
 import { EditorState } from "@codemirror/state";
-import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
-import { renumber } from "./renumber.js";
+import { markdown, markdownLanguage, deleteMarkupBackward, insertNewlineContinueMarkup } from "@codemirror/lang-markdown";
+import { renumber, lockNumbers } from "./renumber.js";
 
 const run = (doc, changes, userEvent, selection) => {
   const st = EditorState.create({ doc, selection, extensions: [markdown({ base: markdownLanguage }), renumber] });
@@ -62,5 +62,57 @@ assert.equal(ins("1. a\n2. b", "b", "x"), "1. a\n2. xb");
   const tr = st.update({ changes: { from: i, to: i + 5, insert: "" }, userEvent: "delete" });
   assert.equal(tr.state.doc.toString(), "1. a\n2. c");
   assert.equal(tr.changes.invert(st.doc).apply(tr.newDoc).toString(), doc);
+}
+
+// --- 번호 잠금(lockNumbers): 번호는 직접 고칠 수 없고, 지우려면 번호 전체를 한 번에 지운다 ---
+const locked = (doc, selection) => EditorState.create({ doc, selection, extensions: [markdown({ base: markdownLanguage }), renumber, lockNumbers] });
+const lk = (doc, changes, userEvent = "input") => locked(doc).update({ changes, userEvent }).state.doc.toString();
+const D = "1. a\n2. b\n3. c"; // 0-3 "1. a", 4 \n, 5 "2", 6 ".", 7 " ", 8 "b"
+assert.equal(lk(D, { from: 6, insert: "9" }), D, "번호 안쪽에 끼워 넣기는 막힌다");
+assert.equal(lk(D, { from: 5, to: 6, insert: "9" }), D, "숫자를 바꾸는 입력은 막힌다");
+assert.equal(lk(D, { from: 5, to: 6 }, "delete"), D, "숫자 하나만 지우기는 막힌다");
+assert.equal(lk(D, { from: 6, to: 7 }, "delete"), D, "마침표만 지우기는 막힌다");
+assert.equal(lk(D, { from: 7, to: 8 }, "delete"), D, "번호 뒤 공백만 지우기도 막힌다");
+assert.equal(lk(D, { from: 0, to: 1, insert: "7" }), D, "첫 항목의 번호도 직접 못 고친다");
+assert.equal(lk(D, { from: 8, insert: "x" }), "1. a\n2. xb\n3. c", "항목 글(번호 뒤)은 그대로 고칠 수 있다");
+assert.equal(lk(D, { from: 5, insert: "7" }), D, "번호 바로 앞에 숫자를 붙여 번호를 바꾸는 것도 막힌다(2. -> 72.)");
+assert.equal(lk(D, { from: 5, insert: "새 " }), "1. a\n새 2. b\n2. c", "번호 앞에 끼워 넣는 것은 허용(그 줄은 번호 항목이 아니게 되므로 뒤 번호가 이어진다)");
+assert.equal(lk(D, { from: 5, to: 8 }, "delete"), "1. a\nb\n2. c", "번호 전체를 지우면 허용되고, 뒤 번호는 이어진다(b는 앞 항목의 이어지는 글)");
+assert.equal(lk(D, { from: 4, to: 9 }, "delete"), "1. a\n2. c", "줄 전체를 지우는 것도 허용(번호 포함)");
+assert.equal(lk(D, { from: 4, to: 12 }, "delete"), D, "다음 줄 번호를 일부만 덮는 삭제는 막힌다");
+// 시작 번호: 새로 "5. "를 쳐서 시작하면 그 번호부터 이어진다(번호를 쳐 넣는 입력은 기존 번호를 건드리는 게 아니다)
+{
+  let st = locked("");
+  for (const [ch, i] of [["5", 0], [".", 1], [" ", 2], ["a", 3]]) st = st.update({ changes: { from: i, insert: ch }, userEvent: "input.type" }).state;
+  assert.equal(st.doc.toString(), "5. a");
+  st = st.update({ changes: { from: 4, insert: "\n6. b\n7. c" }, userEvent: "input" }).state; // 이어 쓰기(Enter가 번호를 +1로 넣은 것)
+  assert.equal(st.doc.toString(), "5. a\n6. b\n7. c");
+  st = st.update({ changes: { from: 5, to: 8 }, userEvent: "delete" }).state; // 가운데 번호를 지워도 시작 번호(5)는 유지된다
+  assert.equal(st.doc.toString(), "5. a\nb\n6. c");
+}
+// 이어 붙인 번호는 다른 번호를 쳐도 순서대로 바로잡힌다
+assert.equal(lk("1. a\n2. b", { from: 9, insert: "\n9. c" }), "1. a\n2. b\n3. c");
+// 다른 사람의 편집(userEvent 없음)과 되돌리기는 막지 않는다
+assert.equal(locked(D).update({ changes: { from: 5, to: 6, insert: "9" } }).state.doc.toString(), "1. a\n9. b\n3. c");
+// Tab·Shift+Tab(들여쓰기 명령)은 번호를 직접 바꾸므로 통과
+assert.equal(lk(D, { from: 5, to: 7, insert: "    1." }, "delete.dedent").includes("    1."), true);
+// 코드 블록 안의 "3. x"는 번호가 아니다
+const fence = "```\n3. x\n```";
+assert.equal(lk(fence, { from: 4, to: 5, insert: "9" }), "```\n9. x\n```");
+// markdown의 Backspace(번호 바로 뒤에서)는 번호 전체를 지우므로 통과한다
+{
+  const st = EditorState.create({ doc: D, selection: { anchor: 8 }, extensions: [markdown({ base: markdownLanguage }), renumber, lockNumbers] });
+  let out = st;
+  deleteMarkupBackward({ state: st, dispatch: (tr) => { out = tr.state; } });
+  assert.equal(out.doc.toString().startsWith("1. a\n"), true);
+  assert.notEqual(out.doc.toString(), D, "번호가 지워졌다(막히지 않았다)");
+  assert.equal(out.doc.toString().split("\n")[1].includes("2."), false);
+}
+// markdown의 Enter(이어 쓰기)로 만든 새 항목도 막히지 않는다
+{
+  const st = EditorState.create({ doc: "1. a\n2. b", selection: { anchor: 4 }, extensions: [markdown({ base: markdownLanguage }), renumber, lockNumbers] });
+  let out = st;
+  insertNewlineContinueMarkup({ state: st, dispatch: (tr) => { out = tr.state; } });
+  assert.equal(out.doc.toString(), "1. a\n2. \n3. b");
 }
 console.log("renumber: ok");
