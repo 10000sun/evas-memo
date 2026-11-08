@@ -19,6 +19,8 @@ def env(tmp_path, monkeypatch):
     for k in ("AUTHOR", "COMMITTER"):
         monkeypatch.setenv(f"GIT_{k}_NAME", "t")
         monkeypatch.setenv(f"GIT_{k}_EMAIL", "t@t")
+    for k in ("EVAS_DB", "EVAS_BACKUP_DIR", "EVAS_PORT"):  # 다른 테스트가 남긴 값이 서버 PC의 .env 대신 읽히지 않게
+        monkeypatch.delenv(k, raising=False)
     origin, dev, server = tmp_path / "origin.git", tmp_path / "dev", tmp_path / "server"
     sh(tmp_path, "git", "init", "-q", "--bare", "-b", "main", str(origin))
     sh(tmp_path, "git", "clone", "-q", str(origin), str(dev))
