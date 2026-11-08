@@ -108,11 +108,13 @@ def test_only_latest_five_snapshots_are_kept(env):
     assert (d / "auto-2020-01-01.db").exists()
 
 
-def test_other_branch_is_left_alone(env):
+def test_other_branch_is_left_alone_but_reported(env):
     m, dev, server, calls = env
     sh(server, "git", "checkout", "-q", "-b", "work")
     push(dev)
-    assert m.run(str(server)) == 0 and calls == [] and (server / "a.txt").read_text() == "1"
+    assert m.run(str(server)) == 1 and calls == [] and (server / "a.txt").read_text() == "1"  # 건드리지 않는다
+    assert "'work' 브랜치" in (server / "data" / "update.log").read_text(encoding="utf-8")  # 하지만 조용히 넘어가지 않는다
+    assert "'work' 브랜치" in status(server)["error"]
 
 
 def test_unhealthy_app_is_reported(env, monkeypatch):

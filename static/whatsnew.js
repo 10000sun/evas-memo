@@ -40,5 +40,5 @@
     const news = seen ? visible.filter((r) => r.id > seen) : visible.slice(0, 1);
     const done = () => { try { localStorage.setItem(KEY, list[0].id); } catch { /* 위와 같다 */ } };
     if (news.length) show("업데이트 안내", news, done); else done();
-  } catch { /* 안내는 없어도 앱 사용에 지장이 없다 */ }
+  } catch (e) { console.warn("업데이트 안내를 불러오지 못했습니다", e); /* 안내는 없어도 앱 사용에 지장이 없다 */ }
 })();

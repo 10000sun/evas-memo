@@ -120,8 +120,9 @@ def healthy(timeout=60):
 
 
 def update():
-    if git("rev-parse", "--abbrev-ref", "HEAD") != BRANCH:
-        return  # 다른 브랜치를 보고 있으면 건드리지 않는다
+    branch = git("rev-parse", "--abbrev-ref", "HEAD")
+    if branch != BRANCH:  # 다른 브랜치는 건드리지 않되, 조용히 넘어가면 '돌고는 있는데 안 올라오는' 상태를 알 수 없으니 실패로 알린다
+        raise RuntimeError(f"서버 PC가 {BRANCH}가 아닌 '{branch}' 브랜치를 보고 있어 자동 배포를 건너뜁니다(레포 폴더에서 `git checkout {BRANCH}` 후 `git pull`)")
     git("fetch", "origin", BRANCH)
     old, new = git("rev-parse", "HEAD"), git("rev-parse", f"origin/{BRANCH}")
     if old == new:
