@@ -27,7 +27,13 @@ const within = (state, pos, names) => {
 };
 const CODE = new Set(["InlineCode"]);
 // 주소 글자가 통째로 http(s) 주소면 그 주소, 아니면 null(user: 등)
-const webUrl = (u) => { for (const x of findUrls(u)) return x.from === 0 && x.to === u.length ? x.url : null; return null; };
+// 첨부 이미지(/files/…)는 상대 주소라 이 사이트 주소를 붙여 새 탭으로 열 수 있게 한다
+const FILE = /^\/files\/[0-9a-f]{32}\.(?:png|jpg|gif|webp)$/;
+const webUrl = (u) => {
+  if (FILE.test(u)) return location.origin + u;
+  for (const x of findUrls(u)) return x.from === 0 && x.to === u.length ? x.url : null;
+  return null;
+};
 
 // ">>> " 여러 줄 인용이 시작되는 줄 위치(없으면 -1). 맨 위 단계 인용 블록과 그 안의 인용만 본다(end 이후는 볼 필요 없음)
 function multiQuote(state, end) {

@@ -109,6 +109,14 @@ function setMode(m) {
 for (const b of document.querySelectorAll("[data-mode]")) b.onclick = () => setMode(b.dataset.mode);
 // 서식 툴바: 에디터가 준 명령 목록(ed.commands)으로 버튼을 만든다. mousedown을 막아 누르는 동안 에디터 선택·포커스를 지키고,
 // 실행 뒤 에디터로 포커스를 돌려준다. 보기 전용(본문 inert)·미리보기에서는 숨긴다
+// 이미지 첨부: 서버에 올리고 {url, name}을 돌려준다. 실패하면 안내만 하고 null. 편집기 붙여넣기·끌어놓기와 툴바 버튼이 함께 쓴다
+async function uploadImage(file) {
+  if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type)) { toast("PNG·JPG·GIF·WebP 이미지만 올릴 수 있습니다"); return null; }
+  if (file.size > 5 * 1024 * 1024) { toast("이미지는 5MB까지 올릴 수 있습니다"); return null; }
+  toast("이미지를 올리는 중…");
+  try { const r = await api(`/api/files?name=${encodeURIComponent(file.name || "")}`, { method: "POST", body: file }); toast("이미지를 올렸습니다"); return r; }
+  catch (e) { toast("올리지 못했습니다: " + e.message); return null; }
+}
 const runTool = (name, arg) => { if (!ed) return; ed.exec(name, arg); ed.view.focus(); };
 const keepFocus = (b) => { b.onmousedown = (e) => e.preventDefault(); return b; };
 function closePalette() {
@@ -123,7 +131,16 @@ function showTools() {
 function paintTools() {
   const pal = $("e-palette");
   pal.replaceChildren(); closePalette();
-  $("e-tools").replaceChildren(...(ed ? ed.commands : []).map((c) => {
+  // 이미지 첨부 버튼: 파일을 고르면 올리고 본문에 링크를 넣는다(붙여넣기·끌어놓기도 된다)
+  const attach = keepFocus(el("button", { type: "button", className: "e-tool", textContent: "📎", title: "이미지 첨부(붙여넣기·끌어놓기도 됩니다)" }));
+  attach.setAttribute("aria-label", "이미지 첨부");
+  const pick = el("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp", multiple: true, hidden: true });
+  attach.onclick = () => pick.click();
+  pick.onchange = async () => {
+    for (const f of [...pick.files]) { const r = await uploadImage(f); if (r && ed) ed.insertText(`[📎 ${r.name}](${r.url}) `); }
+    pick.value = ""; if (ed) ed.view.focus();
+  };
+  $("e-tools").replaceChildren(...(ed ? [...ed.commands.map((c) => {
     const b = keepFocus(el("button", { type: "button", className: "e-tool", textContent: c.icon, title: c.label + (c.key ? ` (${c.key})` : "") }));
     b.dataset.cmd = c.name; b.setAttribute("aria-label", c.label);
     if (!c.colors) { b.onclick = () => runTool(c.name); return b; }
@@ -137,7 +154,7 @@ function paintTools() {
     };
     pal.append(...c.colors.map((x) => sw(x.name, x.name, x.cls)), sw(null, "색 해제", "off"));
     return b;
-  }));
+  }), attach, pick] : []));
   showTools();
 }
 $("e-palette").onkeydown = (e) => { if (e.key === "Escape") { closePalette(); $("e-tools").querySelector('[data-cmd="color"]')?.focus(); } };
@@ -455,7 +472,7 @@ async function openMemo(id) {
   const editable = canEditMemo(m);
   $("e-title").disabled = $("e-cat").disabled = $("e-folder").disabled = !editable;
   $("e-body").inert = !editable; // 보기 전용: 서버가 편집을 버리므로 입력 자체를 막는다
-  ed = EvasEditor.create({ parent: $("e-body"), memoId: id, user: { name: me.name, color: colorOf(me.id) }, linkSource });
+  ed = EvasEditor.create({ parent: $("e-body"), memoId: id, user: { name: me.name, color: colorOf(me.id) }, linkSource, uploadFile: uploadImage });
   paintTools();
   watch(ed, id);
   if (focusTitle) $("e-title").focus();

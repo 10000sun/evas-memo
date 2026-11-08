@@ -206,11 +206,24 @@ const hintsAbove = [
   }),
 ];
 
-// window.EvasEditor.create({parent, memoId, user:{name,color}, linkSource?, live?}) -> {destroy(), view, awareness, provider, exec, commands}
+// 이미지 붙여넣기·끌어놓기: 화면이 준 uploadFile(file) -> {url, name} | null 로 올리고, 링크 글을 커서 자리에 넣는다. 번들은 네트워크를 모른다
+const IMAGE = /^image\/(?:png|jpeg|gif|webp)$/;
+function imageHandlers(uploadFile, insert) {
+  const handle = (files, e) => {
+    const imgs = [...files].filter((f) => IMAGE.test(f.type));
+    if (!imgs.length) return false; // 이미지가 아니면 기본 동작(글 붙여넣기 등)
+    e.preventDefault();
+    (async () => { for (const f of imgs) { const r = await uploadFile(f); if (r) insert(`[📎 ${r.name}](${r.url}) `); } })();
+    return true;
+  };
+  return EditorView.domEventHandlers({ paste: (e) => handle(e.clipboardData?.files || [], e), drop: (e) => handle(e.dataTransfer?.files || [], e) });
+}
+
+// window.EvasEditor.create({parent, memoId, user:{name,color}, linkSource?, uploadFile?, live?}) -> {destroy(), view, awareness, provider, exec, commands, insertText(글)}
 // provider: 화면이 연결 상태('status')·닫힘 코드('connection-close')·문서(provider.doc)를 본다. linkSource: 위 @ 태그 힌트.
 // live(기본 true): 디스코드식 라이브 표시(live-md.js). exec(name, arg): 서식 명령,
 // commands: [{name, label, icon, key, colors?: [{name, cls}]}](툴바용. key는 보이는 단축키 글자, cls는 글자 색 클래스)
-function create({ parent, memoId, user, linkSource, live = true }) {
+function create({ parent, memoId, user, linkSource, uploadFile, live = true }) {
   const doc = new Y.Doc();
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   // y-websocket은 `${서버주소}/${방이름}`으로 접속한다 -> /ws/memos/{memoId}
@@ -221,13 +234,14 @@ function create({ parent, memoId, user, linkSource, live = true }) {
   // 소스 함수는 한 번만 만든다: languageData가 부를 때마다 새 함수면 CodeMirror가 다른 소스로 보고 끝없이 다시 묻는다
   const atSource = linkSource && atCompletions(linkSource, undoManager);
   const fmt = formatting({ undo: undoManager });
+  const insert = (text) => view.dispatch(view.state.replaceSelection(text), { userEvent: "input", scrollIntoView: true });
   const view = new EditorView({
     parent,
     state: EditorState.create({
       doc: text.toString(),
       extensions: [atSource ? failGuard : [], setup, EditorView.lineWrapping, indentUnit.of("    "), tabKeys, renumber, markdown({ base: markdownLanguage }),
         syntaxHighlighting(mdHighlight), links, live ? liveMarkdown({ linkWidget: (url) => new OpenLink(url), openUrl }) : [], fmt.extension,
-        yCollab(text, provider.awareness, { undoManager }),
+        yCollab(text, provider.awareness, { undoManager }), uploadFile ? imageHandlers(uploadFile, insert) : [],
         atSource ? [EditorState.languageData.of(() => [{ autocomplete: atSource }]), hintsAbove] : []],
     }),
   });
@@ -236,6 +250,7 @@ function create({ parent, memoId, user, linkSource, live = true }) {
     awareness: provider.awareness,
     provider,
     exec: (name, arg) => fmt.exec(view, name, arg),
+    insertText: insert,
     commands: COMMANDS.map(({ name, label, icon, key, colors }) => ({ name, label, icon, key, ...(colors ? { colors: colors.map((c) => ({ ...c })) } : {}) })),
     destroy() {
       view.destroy();
