@@ -15,3 +15,4 @@ input.bad { border-color: var(--danger); background: color-mix(in srgb, var(--da
 .sw:hover { transform: scale(1.12); }
 #cn-color { flex: 1 1 100%; order: 5; }
 form.item #cn-color .cedit { width: 100%; }
+.hint.bad { color: var(--danger); font-weight: 600; }

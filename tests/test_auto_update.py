@@ -121,3 +121,28 @@ def test_unhealthy_app_is_reported(env, monkeypatch):
     push(dev)
     m.run(str(server))
     assert "응답하지 않습니다" in (server / "data" / "update.log").read_text(encoding="utf-8")
+
+
+def status(server):
+    import json
+    return json.loads((server / "data" / "update-status.json").read_text(encoding="utf-8"))
+
+
+def test_status_file_shows_the_task_is_alive(env):
+    m, dev, server, calls = env
+    m.run(str(server))  # 새 버전이 없어도 확인한 시각은 남는다(그래서 '돌고 있나'를 알 수 있다)
+    s = status(server)
+    assert s["checked_at"] and s["head"] == sh(server, "git", "rev-parse", "--short", "HEAD") and s["error"] is None and "deployed_at" not in s
+    push(dev)
+    m.run(str(server))
+    s = status(server)
+    assert s["deployed_at"] and s["deployed_ok"] is True and s["deployed_to"] == s["head"]
+
+
+def test_status_file_records_failure(env):
+    m, dev, server, calls = env
+    (server / "a.txt").write_text("서버에서 직접 고침")
+    push(dev)
+    m.run(str(server))
+    s = status(server)
+    assert s["checked_at"] and "git pull" in s["error"]

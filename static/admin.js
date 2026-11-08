@@ -113,6 +113,22 @@ function auditRow(a) {
     el("span", { className: "hint" }, new Date(a.at).toLocaleString("ko-KR", { dateStyle: "medium", timeStyle: "short" })));
 }
 
+// 자동 배포 상태: 마지막 확인이 15분 넘게 없으면(5분마다 도는 작업이라) 멈춘 것으로 본다
+const ago = (iso) => { const m = Math.round((Date.now() - Date.parse(iso)) / 60000); return m < 1 ? "방금" : m < 60 ? `${m}분 전` : m < 1440 ? `${Math.round(m / 60)}시간 전` : `${Math.round(m / 1440)}일 전`; };
+const at = (iso) => new Date(iso).toLocaleString("ko-KR", { dateStyle: "medium", timeStyle: "short" });
+function deployRows(d) {
+  const row = (label, value, cls = "") => el("div", { className: "item" }, el("span", { className: "grow" }, label), el("span", { className: "hint " + cls }, value));
+  const u = d.update, run = d.running;
+  const rows = [row("실행 중인 버전", run ? `${run.commit} (${at(run.date)})` : "알 수 없음")];
+  if (!u || !u.checked_at) return [...rows, row("자동 배포", "기록이 없습니다 — 서버 PC에서 install-auto-update.bat을 실행했는지 확인하세요", "bad")];
+  const stale = Date.now() - Date.parse(u.checked_at) > 15 * 60000;
+  rows.push(row("자동 배포", stale ? `멈춘 것 같습니다 — 마지막 확인 ${ago(u.checked_at)}(${at(u.checked_at)})` : `정상 — 마지막 확인 ${ago(u.checked_at)}`, stale ? "bad" : ""));
+  if (u.deployed_at) rows.push(row("마지막 배포", `${at(u.deployed_at)} → ${u.deployed_to}${u.deployed_ok === false ? " (앱이 응답하지 않았습니다)" : ""}`, u.deployed_ok === false ? "bad" : ""));
+  if (u.head && run && u.head !== run.commit) rows.push(row("재시작 필요", `서버 코드는 ${u.head}인데 앱은 ${run.commit}로 실행 중입니다`, "bad"));
+  if (u.error) rows.push(row("최근 오류", u.error, "bad"));
+  return rows;
+}
+
 async function render() {
   const [cats, users, members, me, blocked] = await Promise.all([api("/api/categories"), api("/api/users"), api("/api/members"), api("/api/me"), api("/api/blocked")]);
   const ban = new Set(blocked.map((b) => b.id));
@@ -121,6 +137,9 @@ async function render() {
   $("members").replaceChildren(...members.filter((m) => !ban.has(m.id)).map((m) => memberRow(m, me.id)));
   $("bl-btn").textContent = `차단 목록 (${blocked.length})`;
   $("blocked").replaceChildren(...(blocked.length ? blocked.map(blockedRow) : [el("p", { className: "hint" }, "차단된 사람이 없습니다")]));
+  const audit = await api("/api/audit");
+  $("audit").replaceChildren(...(audit.length ? audit.map(auditRow) : [el("p", { className: "hint" }, "아직 기록이 없습니다")]));
+  $("deploy").replaceChildren(...deployRows(await api("/api/deploy-status")));
 }
 
 $("bl-btn").onclick = () => { const h = ($("blocked").hidden = !$("blocked").hidden); $("bl-btn").setAttribute("aria-expanded", String(!h)); };

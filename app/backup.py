@@ -6,10 +6,12 @@
 """
 import asyncio
 import glob
+import json
 import logging
 import os
 import re
 import sqlite3
+import subprocess
 import tempfile
 from contextlib import asynccontextmanager
 from datetime import date, datetime
@@ -20,6 +22,7 @@ from starlette.background import BackgroundTask
 
 from . import db, ws
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 log = logging.getLogger(__name__)
 KEEP = 7
 AUTO = re.compile(r"^auto-\d{4}-\d{2}-\d{2}\.db$")
@@ -96,7 +99,30 @@ async def daily(_app=None):
         task.cancel()
 
 
+
+def _running_version():
+    """이 프로세스가 켜질 때의 코드 버전(git). git이 없으면 None. 켜진 뒤에 코드만 바뀌었는지 알아보려고 처음 한 번만 읽는다."""
+    try:
+        out = subprocess.run(["git", "log", "-1", "--format=%h %cI"], cwd=ROOT, capture_output=True, text=True, timeout=5).stdout.split()
+        return {"commit": out[0], "date": out[1]}
+    except Exception:
+        return None
+
+
+RUNNING = _running_version()
+
+
 def register(app, admin):
+    @app.get("/api/deploy-status")
+    def deploy_status(_=Depends(admin)):
+        """실행 중인 버전과 서버 PC 자동 배포(scripts/auto_update.py)의 마지막 확인·배포·오류. 기록이 없으면 update는 null."""
+        try:
+            with open(os.path.join(ROOT, "data", "update-status.json"), encoding="utf-8") as f:
+                upd = json.load(f)
+        except (OSError, ValueError):
+            upd = None
+        return {"running": RUNNING, "update": upd}
+
     @app.get("/api/backup")
     def download(_=Depends(admin)):
         fd, tmp = tempfile.mkstemp(suffix=".db")

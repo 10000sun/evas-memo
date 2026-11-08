@@ -6,6 +6,7 @@ r"""서버 PC 자동 배포: main에 새 커밋이 올라오면 받아서 앱을
 전제: 서버 PC에서는 코드를 직접 고치지 않는다(고친 파일 때문에 pull이 안 되면 멈추고 기록한다).
 """
 import glob
+import json
 import os
 import sqlite3
 import subprocess
@@ -13,13 +14,14 @@ import sys
 import tempfile
 import time
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 
 APP_TASK = "evas-memo-app"  # 앱을 띄우는 작업 스케줄러 작업 이름(scripts\restart-app.bat과 같다)
 DEFAULT_PORT = 8001
 BRANCH = "main"
 KEEP = 5  # 배포 직전 DB 사본을 몇 개 남길지
 LOG, FAIL = os.path.join("data", "update.log"), os.path.join("data", "update.fail")
+STATUS = os.path.join("data", "update-status.json")  # 관리 화면이 읽는다: 마지막 확인 시각·현재 버전·마지막 배포·오류
 
 
 def log(msg):
@@ -27,6 +29,22 @@ def log(msg):
     print(line)
     with open(LOG, "a", encoding="utf-8") as f:
         f.write(line + "\n")
+
+
+def write_status(**fields):
+    """상태 파일에 값을 합쳐 쓴다. 관리 화면이 '자동 배포가 돌고 있나'를 보는 근거(변화가 없는 확인도 checked_at을 갱신한다)."""
+    try:
+        with open(STATUS, encoding="utf-8") as f:
+            cur = json.load(f)
+    except (OSError, ValueError):
+        cur = {}
+    cur.update(fields)
+    with open(STATUS, "w", encoding="utf-8") as f:
+        json.dump(cur, f, ensure_ascii=False)
+
+
+def now_utc():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def git(*args):
@@ -116,7 +134,9 @@ def update():
     snapshot()
     git("pull", "--ff-only", "origin", BRANCH)
     restart()
-    log("배포 완료: 앱이 켜졌습니다" if healthy() else "배포했지만 앱이 응답하지 않습니다. 로그를 확인하세요(되돌리기: docs/DEPLOY.md)")
+    ok = healthy()
+    log("배포 완료: 앱이 켜졌습니다" if ok else "배포했지만 앱이 응답하지 않습니다. 로그를 확인하세요(되돌리기: docs/DEPLOY.md)")
+    write_status(deployed_at=now_utc(), deployed_to=new[:7], deployed_ok=ok)
 
 
 def run(root):
@@ -126,9 +146,14 @@ def run(root):
         update()
         if os.path.exists(FAIL):
             os.remove(FAIL)
+        write_status(checked_at=now_utc(), head=git("rev-parse", "--short", "HEAD"), error=None)
         return 0
     except Exception as e:
         msg = f"실패(앱은 그대로 둡니다): {e}"
+        try:
+            write_status(checked_at=now_utc(), error=str(e))
+        except Exception:
+            pass
         if not (os.path.exists(FAIL) and open(FAIL, encoding="utf-8").read() == msg):  # 같은 실패는 한 번만 적는다
             log(msg)
             with open(FAIL, "w", encoding="utf-8") as f:

@@ -62,6 +62,12 @@
   </section>
 
   <section class="card">
+    <h2>서버 상태·자동 배포</h2>
+    <p class="hint">서버 PC가 5분마다 새 버전을 확인합니다. 아래에서 자동 배포가 돌고 있는지 볼 수 있습니다.</p>
+    <div id="deploy"></div>
+  </section>
+
+  <section class="card">
     <h2>백업·복구</h2>
     <p class="hint">백업은 지금의 모든 데이터(DB 파일 하나)를 내려받습니다. 복구는 고른 백업 파일로 <b>지금 데이터를 통째로 덮어씁니다</b>. 복구 직전의 데이터는 서버에 <code>.before-restore</code> 파일로 한 부 남습니다. 백업에는 사용자 ID·차단 목록이 들어 있으니 안전한 곳에만 보관하세요.</p>
     <p class="hint">자동 백업: 하루에 한 번 만들고 최근 7개만 남깁니다(넘으면 오래된 것부터 지움).</p>
